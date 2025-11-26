@@ -30,8 +30,11 @@ def safe_int(value):
 def generate_code(jid, start, name):
     try: d = datetime.strptime(str(start), "%Y-%m-%d %H:%M:%S").strftime('%d%m%y')
     except: d = datetime.now().strftime('%d%m%y')
-    # Mã hồ sơ: Ngày-ID Tên (Ví dụ: 261125-001 A Minh)
     return f"{d}-{int(jid)} {name}"
+
+def extract_links(log_text):
+    """Tìm tất cả link Google Drive trong log"""
+    return re.findall(r'(https?://[^\s]+)', str(log_text))
 
 # --- 3. KẾT NỐI GOOGLE ---
 def get_gcp_creds(): return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
@@ -42,7 +45,7 @@ def get_sheet():
 def get_users_sheet():
     creds = get_gcp_creds(); client = gspread.authorize(creds)
     try:
-        sh = client.open("DB_DODAC")
+        sh = client.open("DB_DODAC"); 
         try: return sh.worksheet("USERS")
         except: ws = sh.add_worksheet(title="USERS", rows="100", cols="5"); ws.append_row(["username", "password", "fullname", "role"]); return ws
     except: return None
@@ -73,13 +76,13 @@ def send_telegram_msg(msg):
     threading.Thread(target=run).start()
 
 def login_user(u, p):
-    sh = get_users_sheet()
+    sh = get_users_sheet(); 
     if not sh: return None
     try: cell = sh.find(u); row = sh.row_values(cell.row); return row if row[1] == make_hash(p) else None
     except: return None
 
 def create_user(u, p, n):
-    sh = get_users_sheet()
+    sh = get_users_sheet(); 
     if not sh: return False
     try: 
         if sh.find(u): return False
@@ -112,11 +115,10 @@ def add_job(n, p, a, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     
     sh.append_row([jid, now, n, p, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
     
-    # Gửi Telegram với Mã Hồ Sơ
     code = generate_code(jid, now, n)
     type_msg = "(CHỈ ĐO ĐẠC)" if is_survey else ""
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
-    send_telegram_msg(f"🚀 <b>MỚI {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 Giao: {asn_clean}\n💰 {money_msg}")
+    send_telegram_msg(f"🚀 <b>MỚI #{jid} {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}")
 
 def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid):
     sh = get_sheet(); cell = sh.find(str(jid))
@@ -130,18 +132,11 @@ def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, 
             sh.update_cell(r, 6, nxt)
             if asn: sh.update_cell(r, 8, asn.split(" - ")[0])
             sh.update_cell(r, 9, (datetime.now()+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S"))
+            sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
             
-            sh.update_cell(r, 13, 1 if deposit_ok else 0)
-            sh.update_cell(r, 14, safe_int(fee_amount))
-            sh.update_cell(r, 15, 1 if is_paid else 0)
-            
-            olog = sh.cell(r, 11).value
-            nlog = f"\n[{now}] {u}: {stg}->{nxt} | Note: {nt} | File: {lnk}"
-            sh.update_cell(r, 11, olog + nlog)
-            
+            olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{now}] {u}: {stg}->{nxt} | Note: {nt} | File: {lnk}")
             if nxt=="7. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
             
-            # Telegram mã đẹp
             code = generate_code(jid, start_t, c_name)
             send_telegram_msg(f"✅ <b>CẬP NHẬT</b>\n📂 <b>{code}</b>\n{stg} ➡ <b>{nxt}</b>\n👤 {u}")
 
@@ -152,7 +147,6 @@ def update_finance_only(jid, deposit_ok, fee_amount, is_paid, u):
         sh.update_cell(r, 13, 1 if deposit_ok else 0)
         sh.update_cell(r, 14, safe_int(fee_amount))
         sh.update_cell(r, 15, 1 if is_paid else 0)
-        
         c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
         code = generate_code(jid, start_t, c_name)
         send_telegram_msg(f"💰 <b>TÀI CHÍNH</b>\n📂 <b>{code}</b>\n👤 {u}\nPhí: {fee_amount:,} VNĐ | Thu đủ: {'✅' if is_paid else '❌'}")
@@ -163,7 +157,6 @@ def pause_job(jid, rs, u):
         r = cell.row; sh.update_cell(r, 7, "Tạm dừng")
         c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
         code = generate_code(jid, start_t, c_name)
-        
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
         send_telegram_msg(f"⛔ <b>TẠM DỪNG</b>\n📂 <b>{code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
@@ -173,7 +166,6 @@ def resume_job(jid, u):
         r = cell.row; sh.update_cell(r, 7, "Đang xử lý")
         c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
         code = generate_code(jid, start_t, c_name)
-        
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
         send_telegram_msg(f"▶️ <b>KHÔI PHỤC</b>\n📂 <b>{code}</b>\n👤 Bởi: {u}")
 
@@ -183,7 +175,6 @@ def terminate_job(jid, rs, u):
         r = cell.row; sh.update_cell(r, 7, "Kết thúc sớm")
         c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
         code = generate_code(jid, start_t, c_name)
-        
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
@@ -203,35 +194,23 @@ def render_progress_bar(current_stage, status):
     st.markdown(h+'</div>', unsafe_allow_html=True)
 
 # --- 6. UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V10", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V11", page_icon="☁️", layout="wide")
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 
 if not st.session_state['logged_in']:
-    st.title("🔐 Đăng nhập V10.1")
+    st.title("🔐 Đăng nhập V11.0")
     c1, c2 = st.columns(2)
     with c1:
-        u = st.text_input("User")
-        p = st.text_input("Pass", type='password')
+        u = st.text_input("User"); p = st.text_input("Pass", type='password')
         if st.button("Login"):
             d = login_user(u, p)
-            if d: 
-                st.session_state['logged_in'] = True
-                st.session_state['user'] = d[0]
-                st.session_state['role'] = d[3]
-                st.rerun()
-            else: 
-                st.error("Sai!")
+            if d: st.session_state['logged_in']=True; st.session_state['user']=d[0]; st.session_state['role']=d[3]; st.rerun()
+            else: st.error("Sai thông tin!")
     with c2:
-        nu = st.text_input("User Mới")
-        np = st.text_input("Pass Mới", type='password')
-        nn = st.text_input("Họ Tên")
+        nu = st.text_input("User Mới"); np = st.text_input("Pass Mới", type='password'); nn = st.text_input("Họ Tên")
         if st.button("Đăng Ký"):
-            # Đã sửa lỗi cú pháp ở đây (tách dòng)
-            if create_user(nu, np, nn):
-                st.success("OK! Chờ duyệt.")
-            else:
-                st.error("Trùng tên!")
+            if create_user(nu, np, nn): st.success("OK!"); else: st.error("Trùng tên!")
 else:
     user = st.session_state['user']
     role = st.session_state['role']
@@ -241,6 +220,37 @@ else:
         st.session_state['logged_in'] = False
         st.rerun()
     
+    # --- LẤY DỮ LIỆU CHUNG ---
+    try:
+        df = get_all_jobs_df()
+    except: df = pd.DataFrame()
+
+    # --- SIDEBAR: THÔNG BÁO QUÁ HẠN ---
+    if not df.empty:
+        now = datetime.now()
+        # Lọc hồ sơ của mình (hoặc quản lý thấy hết)
+        if role != "Quản lý":
+            my_alert_df = df[(df['assigned_to'].astype(str) == user) & (~df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))]
+        else:
+            my_alert_df = df[~df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
+        
+        my_alert_df['dl_dt'] = pd.to_datetime(my_alert_df['deadline'])
+        over = my_alert_df[my_alert_df['dl_dt'] < now]
+        soon = my_alert_df[(my_alert_df['dl_dt'] >= now) & (my_alert_df['dl_dt'] <= now + timedelta(days=1))]
+        
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🔔 Thông báo hạn")
+        if not over.empty:
+            st.sidebar.error(f"🔴 {len(over)} Hồ sơ QUÁ HẠN")
+            with st.sidebar.expander("Xem quá hạn"):
+                for _, r in over.iterrows(): st.write(f"- {r['customer_name']}")
+        if not soon.empty:
+            st.sidebar.warning(f"🟡 {len(soon)} Hồ sơ sắp đến hạn")
+            with st.sidebar.expander("Xem sắp đến"):
+                for _, r in soon.iterrows(): st.write(f"- {r['customer_name']}")
+        if over.empty and soon.empty:
+            st.sidebar.success("✅ Không có việc gấp")
+
     # Menu chính
     menu = ["🏠 Việc Của Tôi", "🔍 Tra Cứu", "📝 Tạo Hồ Sơ", "📊 Báo Cáo"]
     if role == "Quản lý": 
@@ -251,36 +261,55 @@ else:
 
     if sel == "🏠 Việc Của Tôi":
         st.title("📋 Tiến trình hồ sơ")
-        try:
-            df = get_all_jobs_df()
-            if df.empty:
-                st.info("Trống!")
+        if df.empty: st.info("Trống!")
+        else:
+            if role != "Quản lý":
+                my_df = df[(df['assigned_to'].astype(str) == user) & (~df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))]
             else:
-                if role != "Quản lý":
-                    my_df = df[(df['assigned_to'].astype(str) == user) & (~df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))]
-                else:
-                    my_df = df[~df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
+                my_df = df[~df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
+            
+            if my_df.empty: st.info("Hết việc!")
+            else:
+                now = datetime.now(); my_df['dl_dt'] = pd.to_datetime(my_df['deadline'])
+                over = my_df[my_df['dl_dt'] < now]; soon = my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(days=1))]
                 
-                if my_df.empty:
-                    st.info("Hết việc!")
-                else:
-                    now = datetime.now()
-                    my_df['dl_dt'] = pd.to_datetime(my_df['deadline'])
-                    over = my_df[my_df['dl_dt'] < now]
-                    soon = my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(days=1))]
-                    
-                    k1, k2, k3, k4 = st.columns(4)
-                    k1.metric("🔴 Quá Hạn", len(over), border=True)
-                    k2.metric("🟡 Gấp", len(soon), border=True)
-                    k3.metric("🟢 Tổng", len(my_df), border=True)
-                    st.divider()
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("🔴 Quá Hạn", len(over), border=True)
+                k2.metric("🟡 Gấp", len(soon), border=True)
+                k3.metric("🟢 Tổng", len(my_df), border=True)
+                st.divider()
 
-                    for i, j in my_df.iterrows():
-                        code = generate_code(j['id'], j['start_time'], j['customer_name'])
-                        icon = "⛔" if j['status']=='Tạm dừng' else "⏹️" if j['status']=='Kết thúc sớm' else ("🔴" if j['dl_dt'] < now else "🟡" if j['dl_dt'] <= now+timedelta(days=1) else "🟢")
+                for i, j in my_df.iterrows():
+                    code = generate_code(j['id'], j['start_time'], j['customer_name'])
+                    icon = "⛔" if j['status']=='Tạm dừng' else "⏹️" if j['status']=='Kết thúc sớm' else ("🔴" if j['dl_dt'] < now else "🟡" if j['dl_dt'] <= now+timedelta(days=1) else "🟢")
+                    
+                    with st.expander(f"{icon} {code} | {j['current_stage']}"):
+                        render_progress_bar(j['current_stage'], j['status'])
                         
-                        with st.expander(f"{icon} {code} | {j['current_stage']}"):
-                            render_progress_bar(j['current_stage'], j['status'])
+                        # --- TÁCH THÀNH 2 TAB ---
+                        tab_info, tab_files = st.tabs(["📝 Thông tin & Xử lý", "📂 Hồ sơ đính kèm"])
+                        
+                        with tab_files:
+                            st.markdown("### 📂 Kho file hồ sơ")
+                            # Tự động quét link từ logs
+                            all_links = extract_links(j['logs'])
+                            if not all_links:
+                                st.info("Chưa có file đính kèm nào.")
+                            else:
+                                for link in all_links:
+                                    # Hiển thị nút tải và xem trước
+                                    c_f1, c_f2 = st.columns([3, 1])
+                                    c_f1.markdown(f"🔗 [Mở File]({link})")
+                                    c_f2.link_button("⬇️ Tải/Xem", link)
+                                    
+                                    # Thử hiển thị preview nếu là ảnh Google Drive
+                                    # Lưu ý: Google Drive link cần xử lý để hiện ảnh, ở đây hiện link là an toàn nhất
+                                    if "drive.google.com" in link:
+                                        preview_link = link.replace("/view?usp=drivesdk", "/preview").replace("/view", "/preview")
+                                        st.components.v1.iframe(preview_link, height=300)
+                                    st.divider()
+
+                        with tab_info:
                             st.subheader(f"👤 {j['customer_name']}")
                             if safe_int(j.get('is_survey_only')) == 1: st.warning("🛠️ CHỈ ĐO ĐẠC")
                             
@@ -296,75 +325,50 @@ else:
                                     
                                     dep_ok = st.checkbox("Đã thu tạm ứng?", value=dep_val)
                                     if not dep_ok: st.caption("🔴 Chưa thu tạm ứng")
-                                    fee = st.number_input("Chi phí đo đạc (VNĐ)", value=fee_val, step=100000)
+                                    fee = st.number_input("Phí đo đạc (VNĐ)", value=fee_val, step=100000)
                                     paid_ok = st.checkbox("Đã thu đủ tiền?", value=paid_val)
-                                    
-                                    if st.form_submit_button("💾 Lưu Tài Chính"):
-                                        update_finance_only(j['id'], dep_ok, fee, paid_ok, user)
-                                        st.success("Đã lưu!")
-                                        time.sleep(0.5)
-                                        st.rerun()
+                                    if st.form_submit_button("💾 Lưu Tài Chính"): 
+                                        update_finance_only(j['id'], dep_ok, fee, paid_ok, user); st.success("Đã lưu!"); time.sleep(0.5); st.rerun()
                                 
-                                st.markdown("#### 📜 Tiến trình hồ sơ")
+                                st.markdown("#### 📜 Nhật ký xử lý")
                                 with st.container(border=True):
+                                    # Chỉ hiện text log, bỏ link dài dòng
                                     raw_logs = str(j['logs']).split('\n')
                                     for log_line in raw_logs:
                                         if not log_line.strip(): continue
-                                        link_match = re.search(r'File: (http[s]?://\S+)', log_line)
-                                        clean_log = log_line.replace(link_match.group(0), "") if link_match else log_line
+                                        # Ẩn link trong text log cho gọn
+                                        clean_log = re.sub(r'\| File: http\S+', '', log_line) 
                                         st.text(clean_log)
-                                        if link_match: st.link_button("📂 Xem/Tải", link_match.group(1))
 
                             with c2:
                                 if j['status'] in ['Tạm dừng', 'Kết thúc sớm']:
                                     st.error(f"TRẠNG THÁI: {j['status'].upper()}")
                                     if j['status'] == 'Tạm dừng':
-                                        if st.button("▶️ Tiếp tục", key=f"r{j['id']}"):
-                                            resume_job(j['id'], user)
-                                            st.rerun()
+                                        if st.button("▶️ Tiếp tục", key=f"r{j['id']}"): resume_job(j['id'], user); st.rerun()
                                 else:
                                     st.write("👉 **Chuyển bước**")
                                     with st.form(f"f{j['id']}"):
-                                        nt = st.text_area("Ghi chú")
-                                        fl = st.file_uploader("Kết quả")
-                                        cur = j['current_stage']
-                                        is_sv = safe_int(j.get('is_survey_only'))
+                                        nt = st.text_area("Ghi chú"); fl = st.file_uploader("Upload File (Ảnh/PDF)")
+                                        cur = j['current_stage']; is_sv = safe_int(j.get('is_survey_only'))
                                         nxt = "7. Hoàn thành" if is_sv==1 and cur=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(cur)
+                                        if nxt and nxt!="7. Hoàn thành": st.write(f"Sang: **{nxt}**"); asn = st.selectbox("Giao", get_active_users_list()); d = st.number_input("Hạn", value=2)
+                                        else: st.info("Kết thúc"); asn=""; d=0
                                         
-                                        if nxt and nxt!="7. Hoàn thành":
-                                            st.write(f"Sang: **{nxt}**")
-                                            asn = st.selectbox("Giao", get_active_users_list())
-                                            d = st.number_input("Hạn", value=2)
-                                        else:
-                                            st.info("Kết thúc")
-                                            asn = ""; d = 0
-                                            
-                                        if st.form_submit_button("✅ Chuyển"):
-                                            dep = 1 if safe_int(j.get('deposit'))==1 else 0
-                                            money = safe_int(j.get('survey_fee'))
-                                            pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
-                                            update_stage(j['id'], cur, nt, fl, user, asn, d, is_sv, dep, money, pdone)
-                                            st.success("Done!")
-                                            time.sleep(1)
-                                            st.rerun()
+                                        if st.form_submit_button("✅ Chuyển"): 
+                                            dep = 1 if safe_int(j.get('deposit'))==1 else 0; money = safe_int(j.get('survey_fee')); pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
+                                            update_stage(j['id'], cur, nt, fl, user, asn, d, is_sv, dep, money, pdone); st.success("Done!"); time.sleep(1); st.rerun()
                                     
                                     c_stop1, c_stop2 = st.columns(2)
-                                    if c_stop1.button("⏸️ Dừng", key=f"p{j['id']}"):
-                                        st.session_state[f'pm_{j['id']}'] = True
-                                    if c_stop2.button("⏹️ Kết thúc", key=f"t{j['id']}"):
-                                        st.session_state[f'tm_{j['id']}'] = True
+                                    if c_stop1.button("⏸️ Dừng", key=f"p{j['id']}"): st.session_state[f'pm_{j['id']}'] = True
+                                    if c_stop2.button("⏹️ Kết thúc", key=f"t{j['id']}"): st.session_state[f'tm_{j['id']}'] = True
                                     
                                     if st.session_state.get(f'pm_{j['id']}', False):
                                         rs = st.text_input("Lý do dừng:", key=f"rs{j['id']}")
-                                        if st.button("OK Dừng", key=f"okp{j['id']}"):
-                                            pause_job(j['id'], rs, user)
-                                            st.rerun()
+                                        if st.button("OK Dừng", key=f"okp{j['id']}"): pause_job(j['id'], rs, user); st.rerun()
                                     
                                     if st.session_state.get(f'tm_{j['id']}', False):
                                         rs_t = st.text_input("Lý do kết thúc sớm:", key=f"rst{j['id']}")
-                                        if st.button("OK Kết thúc", key=f"okt{j['id']}"):
-                                            terminate_job(j['id'], rs_t, user)
-                                            st.rerun()
+                                        if st.button("OK Kết thúc", key=f"okt{j['id']}"): terminate_job(j['id'], rs_t, user); st.rerun()
 
         except Exception as e: st.error(f"Lỗi: {e}")
 
@@ -380,69 +384,42 @@ else:
                     st.dataframe(
                         unpaid[['Mã', 'customer_phone', 'survey_fee', 'deposit']],
                         column_config={
-                            "Mã": "Hồ sơ",
-                            "customer_phone": "SĐT",
+                            "Mã": "Hồ sơ", "customer_phone": "SĐT",
                             "survey_fee": st.column_config.NumberColumn("Phí (VNĐ)", format="%d"),
                             "deposit": st.column_config.CheckboxColumn("Đã cọc?")
-                        },
-                        use_container_width=True
+                        }, use_container_width=True
                     )
-                else:
-                    st.success("Tuyệt vời! Không có công nợ.")
+                else: st.success("Sạch nợ!")
         except: pass
 
     elif sel == "📝 Tạo Hồ Sơ":
         st.title("Tạo Hồ Sơ")
         with st.form("new"):
-            c1, c2 = st.columns(2)
-            n = c1.text_input("Tên")
-            p = c2.text_input("SĐT")
-            a = st.text_input("Đ/c")
-            f = st.file_uploader("File")
-            st.divider()
-            c_o, c_a = st.columns(2)
-            is_sv = c_o.checkbox("🛠️ CHỈ ĐO ĐẠC")
-            st.markdown("---")
-            st.write("💰 **Thông tin phí:**")
-            c_m1, c_m2 = st.columns(2)
-            dep_ok = c_m1.checkbox("Đã thu tạm ứng?")
-            fee_val = c_m2.number_input("Dự kiến phí:", value=0, step=100000)
-            asn = st.selectbox("Giao cho", get_active_users_list())
-            d = st.number_input("Hạn", value=1)
-            
+            c1, c2 = st.columns(2); n = c1.text_input("Tên"); p = c2.text_input("SĐT"); a = st.text_input("Đ/c"); f = st.file_uploader("File")
+            st.divider(); c_o, c_a = st.columns(2); is_sv = c_o.checkbox("🛠️ CHỈ ĐO ĐẠC"); st.markdown("---"); st.write("💰 **Thông tin phí:**")
+            c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã thu tạm ứng?"); fee_val = c_m2.number_input("Dự kiến phí:", value=0, step=100000)
+            asn = st.selectbox("Giao cho", get_active_users_list()); d = st.number_input("Hạn", value=1)
             if st.form_submit_button("Tạo"):
-                if n and asn:
-                    add_job(n, p, a, f, user, asn, d, is_sv, dep_ok, fee_val)
-                    st.success("OK!")
+                if n and asn: add_job(n, p, a, f, user, asn, d, is_sv, dep_ok, fee_val); st.success("OK!"); st.rerun()
                 else: st.error("Thiếu tin")
 
     elif sel == "🔍 Tra Cứu":
         st.title("Tra Cứu")
         q = st.text_input("Tìm kiếm")
         if q:
-            df = get_all_jobs_df()
-            res = df[df.apply(lambda r: q.lower() in str(r).lower(), axis=1)]
-            st.dataframe(res)
+            df = get_all_jobs_df(); res = df[df.apply(lambda r: q.lower() in str(r).lower(), axis=1)]; st.dataframe(res)
 
     elif sel == "📊 Báo Cáo":
-        st.title("Thống Kê")
-        df = get_all_jobs_df()
-        if not df.empty:
-            st.bar_chart(df['current_stage'].value_counts())
-            st.dataframe(df)
+        st.title("Thống Kê"); df = get_all_jobs_df()
+        if not df.empty: st.bar_chart(df['current_stage'].value_counts()); st.dataframe(df)
             
     elif sel == "👥 Nhân Sự":
         if role == "Quản lý":
-            st.title("Phân Quyền")
-            df = get_all_users()
+            st.title("Phân Quyền"); df = get_all_users()
             for i, u in df.iterrows():
-                c1, c2 = st.columns([2, 2])
-                c1.write(f"**{u['username']}** ({u['fullname']})")
+                c1, c2 = st.columns([2, 2]); c1.write(f"**{u['username']}** ({u['fullname']})")
                 if u['username']!=user:
                     idx = ROLES.index(u['role']) if u['role'] in ROLES else 2
                     nr = c2.selectbox("Role", ROLES, index=idx, key=u['username'])
-                    if nr!=u['role']:
-                        update_user_role(u['username'], nr)
-                        st.toast("Lưu!")
-                        st.rerun()
+                    if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Lưu!"); st.rerun()
         else: st.error("Cấm!")
