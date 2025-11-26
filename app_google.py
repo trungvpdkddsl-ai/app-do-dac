@@ -12,9 +12,8 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
 # --- 1. CẤU HÌNH ---
-TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
-TELEGRAM_CHAT_ID = "-5046493421"
-
+TELEGRAM_TOKEN = ""
+TELEGRAM_CHAT_ID = ""
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
@@ -85,6 +84,7 @@ def upload_to_drive(file_obj, folder_name):
         if not res.get('files'):
             return ""
         pid = res['files'][0]['id']
+        
         q_sub = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{pid}' in parents"
         res_sub = service.files().list(q=q_sub, fields="files(id)").execute()
         
@@ -115,8 +115,7 @@ def send_telegram_msg(msg):
 
 def login_user(u, p):
     sh = get_users_sheet()
-    if not sh:
-        return None
+    if not sh: return None
     try:
         cell = sh.find(u)
         if cell:
@@ -164,38 +163,39 @@ def get_all_jobs_df():
     df = pd.DataFrame(data)
     if not df.empty:
         df['id'] = df['id'].apply(safe_int)
-        if 'deposit' not in df.columns:
-            df['deposit'] = 0
-        if 'survey_fee' not in df.columns:
-            df['survey_fee'] = 0
-        if 'is_paid' not in df.columns:
-            df['is_paid'] = 0
-        if 'file_link' not in df.columns:
-            df['file_link'] = ""
+        if 'deposit' not in df.columns: df['deposit'] = 0
+        if 'survey_fee' not in df.columns: df['survey_fee'] = 0
+        if 'is_paid' not in df.columns: df['is_paid'] = 0
+        if 'file_link' not in df.columns: df['file_link'] = ""
+        if 'procedure_type' not in df.columns: df['procedure_type'] = "Cấp đổi"
     return df
 
 # --- XỬ LÝ TÀI CHÍNH & HỒ SƠ ---
-def add_job(n, p, a, f, u, asn, d, is_survey, deposit_ok, fee_amount):
+def add_job(n, p, a, f, u, asn, d, is_survey, deposit_ok, fee_amount, proc_type):
     sh = get_sheet()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     dl = (datetime.now()+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
     jid = int(time.time())
     link = upload_to_drive(f, f"{jid}_{n}")
-    log = f"[{now}] {u}: Khởi tạo"
+    log = f"[{now}] {u}: Khởi tạo | Thủ tục: {proc_type}"
     if link:
         log += f" | File: {link}"
+    
     asn_clean = asn.split(" - ")[0] if asn else ""
     sv_flag = 1 if is_survey else 0
     dep_flag = 1 if deposit_ok else 0
     
-    sh.append_row([jid, now, n, p, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
+    # Thêm dòng mới (16 cột - thêm cột procedure_type ở cuối)
+    sh.append_row([jid, now, n, p, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0, proc_type])
     
     code = generate_code(jid, now, n)
-    type_msg = "(CHỈ ĐO ĐẠC)" if is_survey else ""
+    type_msg = f"({proc_type.upper()})"
+    if is_survey: type_msg += " (CHỈ ĐO)"
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
-    send_telegram_msg(f"🚀 <b>MỚI #{jid} {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}")
+    
+    send_telegram_msg(f"🚀 <b>MỚI {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}")
 
-def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid):
+def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid, proc_type):
     sh = get_sheet()
     cell = sh.find(str(jid))
     if cell:
@@ -204,14 +204,22 @@ def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, 
         lnk = ""
         c_name = sh.cell(r, 3).value
         start_t = sh.cell(r, 2).value
+        
         if f:
             lnk = upload_to_drive(f, f"{jid}_{c_name}")
         
-        nxt = "7. Hoàn thành" if is_survey == 1 and stg == "3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(stg)
+        # LOGIC CHUYỂN BƯỚC THÔNG MINH
+        nxt = None
+        if proc_type == "Chuyển quyền" and stg == "1. Tạo mới":
+            nxt = "3. Làm hồ sơ" # Nhảy qua đo đạc
+        elif is_survey == 1 and stg == "3. Làm hồ sơ":
+            nxt = "7. Hoàn thành" # Chỉ đo đạc
+        else:
+            nxt = WORKFLOW_DEFAULT.get(stg)
+            
         if nxt:
             sh.update_cell(r, 6, nxt)
-            if asn:
-                sh.update_cell(r, 8, asn.split(" - ")[0])
+            if asn: sh.update_cell(r, 8, asn.split(" - ")[0])
             sh.update_cell(r, 9, (datetime.now()+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S"))
             
             sh.update_cell(r, 13, 1 if deposit_ok else 0)
@@ -220,12 +228,10 @@ def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, 
             
             olog = sh.cell(r, 11).value
             nlog = f"\n[{now}] {u}: {stg}->{nxt} | Note: {nt}"
-            if lnk:
-                nlog += f" | File: {lnk}"
+            if lnk: nlog += f" | File: {lnk}"
             sh.update_cell(r, 11, olog + nlog)
             
-            if nxt == "7. Hoàn thành":
-                sh.update_cell(r, 7, "Hoàn thành")
+            if nxt == "7. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
             
             code = generate_code(jid, start_t, c_name)
             send_telegram_msg(f"✅ <b>CẬP NHẬT</b>\n📂 <b>{code}</b>\n{stg} ➡ <b>{nxt}</b>\n👤 {u}")
@@ -238,6 +244,7 @@ def update_finance_only(jid, deposit_ok, fee_amount, is_paid, u):
         sh.update_cell(r, 13, 1 if deposit_ok else 0)
         sh.update_cell(r, 14, safe_int(fee_amount))
         sh.update_cell(r, 15, 1 if is_paid else 0)
+        
         c_name = sh.cell(r, 3).value
         start_t = sh.cell(r, 2).value
         code = generate_code(jid, start_t, c_name)
@@ -249,8 +256,7 @@ def pause_job(jid, rs, u):
     if cell:
         r = cell.row
         sh.update_cell(r, 7, "Tạm dừng")
-        c_name = sh.cell(r, 3).value
-        start_t = sh.cell(r, 2).value
+        c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
         code = generate_code(jid, start_t, c_name)
         olog = sh.cell(r, 11).value
         sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
@@ -262,8 +268,7 @@ def resume_job(jid, u):
     if cell:
         r = cell.row
         sh.update_cell(r, 7, "Đang xử lý")
-        c_name = sh.cell(r, 3).value
-        start_t = sh.cell(r, 2).value
+        c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
         code = generate_code(jid, start_t, c_name)
         olog = sh.cell(r, 11).value
         sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
@@ -322,7 +327,6 @@ if not st.session_state['logged_in']:
         np = st.text_input("Pass Mới", type='password')
         nn = st.text_input("Họ Tên")
         if st.button("Đăng Ký"):
-            # --- ĐÃ SỬA LỖI CÚ PHÁP TẠI ĐÂY ---
             if create_user(nu, np, nn):
                 st.success("OK! Chờ duyệt.")
             else:
@@ -336,7 +340,6 @@ else:
         st.session_state['logged_in'] = False
         st.rerun()
     
-    # Menu chính
     menu = ["🏠 Việc Của Tôi", "🔍 Tra Cứu", "📝 Tạo Hồ Sơ", "📊 Báo Cáo"]
     if role == "Quản lý": 
         menu.insert(1, "💰 Công Nợ")
@@ -384,7 +387,6 @@ else:
                                 all_links = extract_links(j['logs'])
                                 if j['file_link']: 
                                     all_links.insert(0, j['file_link'])
-                                
                                 unique_links = list(set(all_links))
                                 
                                 if not unique_links:
@@ -401,8 +403,11 @@ else:
 
                             with tab_info:
                                 st.subheader(f"👤 {j['customer_name']}")
-                                if safe_int(j.get('is_survey_only')) == 1: 
-                                    st.warning("🛠️ CHỈ ĐO ĐẠC")
+                                proc_type = j.get('procedure_type', 'Cấp đổi')
+                                is_sv = safe_int(j.get('is_survey_only'))
+                                badge_color = "blue" if proc_type == "Cấp đổi" else "orange" if proc_type == "Cấp lần đầu" else "green"
+                                st.markdown(f":{badge_color}[**Thủ tục: {proc_type}**]")
+                                if is_sv == 1: st.warning("🛠️ CHỈ ĐO ĐẠC")
                                 
                                 c1, c2 = st.columns([1.5, 1])
                                 with c1:
@@ -413,13 +418,10 @@ else:
                                         dep_val = safe_int(j.get('deposit')) == 1
                                         fee_val = safe_int(j.get('survey_fee'))
                                         paid_val = safe_int(j.get('is_paid')) == 1
-                                        
                                         dep_ok = st.checkbox("Đã thu tạm ứng?", value=dep_val)
-                                        if not dep_ok: 
-                                            st.caption("🔴 Chưa thu tạm ứng")
+                                        if not dep_ok: st.caption("🔴 Chưa thu tạm ứng")
                                         fee = st.number_input("Phí đo đạc (VNĐ)", value=fee_val, step=100000)
                                         paid_ok = st.checkbox("Đã thu đủ tiền?", value=paid_val)
-                                        
                                         if st.form_submit_button("💾 Lưu Tài Chính"): 
                                             update_finance_only(j['id'], dep_ok, fee, paid_ok, user)
                                             st.success("Đã lưu!")
@@ -430,8 +432,7 @@ else:
                                     with st.container(border=True):
                                         raw_logs = str(j['logs']).split('\n')
                                         for log_line in raw_logs:
-                                            if not log_line.strip(): 
-                                                continue
+                                            if not log_line.strip(): continue
                                             clean_log = re.sub(r'\| File: http\S+', '', log_line) 
                                             st.text(clean_log)
 
@@ -449,11 +450,24 @@ else:
                                             fl = st.file_uploader("Upload File")
                                             cur = j['current_stage']
                                             is_sv = safe_int(j.get('is_survey_only'))
-                                            nxt = "7. Hoàn thành" if is_sv==1 and cur=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(cur)
+                                            proc = j.get('procedure_type', 'Cấp đổi')
+                                            
+                                            # LOGIC QUY TRÌNH
+                                            if proc == "Chuyển quyền" and cur == "1. Tạo mới":
+                                                nxt = "3. Làm hồ sơ"
+                                            elif is_sv == 1 and cur == "3. Làm hồ sơ":
+                                                nxt = "7. Hoàn thành"
+                                            else:
+                                                nxt = WORKFLOW_DEFAULT.get(cur)
+                                                
                                             if nxt and nxt!="7. Hoàn thành":
-                                                st.write(f"Sang: **{nxt}**")
-                                                asn = st.selectbox("Giao", get_active_users_list())
-                                                d = st.number_input("Hạn", value=2)
+                                                label_assign = "Giao người làm tiếp:"
+                                                if nxt == "3. Làm hồ sơ": label_assign = "Giao Nhân viên HỒ SƠ:"
+                                                elif nxt == "2. Đo đạc": label_assign = "Giao Đội ĐO ĐẠC:"
+                                                
+                                                st.write(f"Chuyển sang: **{nxt}**")
+                                                asn = st.selectbox(label_assign, get_active_users_list())
+                                                d = st.number_input("Hạn (Ngày)", value=2)
                                             else:
                                                 st.info("Kết thúc")
                                                 asn = ""; d = 0
@@ -462,7 +476,7 @@ else:
                                                 dep = 1 if safe_int(j.get('deposit'))==1 else 0
                                                 money = safe_int(j.get('survey_fee'))
                                                 pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
-                                                update_stage(j['id'], cur, nt, fl, user, asn, d, is_sv, dep, money, pdone)
+                                                update_stage(j['id'], cur, nt, fl, user, asn, d, is_sv, dep, money, pdone, proc)
                                                 st.success("Done!")
                                                 time.sleep(1)
                                                 st.rerun()
@@ -515,19 +529,27 @@ else:
             p = c2.text_input("SĐT")
             a = st.text_input("Đ/c")
             f = st.file_uploader("File")
+            
             st.divider()
-            c_o, c_a = st.columns(2)
-            is_sv = c_o.checkbox("🛠️ CHỈ ĐO ĐẠC")
+            col_proc, col_opt = st.columns(2)
+            proc_type = col_proc.selectbox("Loại thủ tục:", ["Cấp đổi", "Cấp lần đầu", "Chuyển quyền"])
+            is_sv = col_opt.checkbox("🛠️ CHỈ ĐO ĐẠC")
+            
             st.markdown("---")
             st.write("💰 **Thông tin phí:**")
             c_m1, c_m2 = st.columns(2)
             dep_ok = c_m1.checkbox("Đã thu tạm ứng?")
-            fee_val = c_m2.number_input("Dự kiến phí:", value=0, step=100000)
-            asn = st.selectbox("Giao cho", get_active_users_list())
+            fee_val = c_m2.number_input("Phí:", value=0, step=100000)
+            
+            assign_label = "Giao ĐO ĐẠC cho:"
+            if proc_type == "Chuyển quyền":
+                assign_label = "Giao LÀM HỒ SƠ cho (Bỏ qua đo đạc):"
+            
+            asn = st.selectbox(assign_label, get_active_users_list())
             d = st.number_input("Hạn", value=1)
             if st.form_submit_button("Tạo"):
                 if n and asn:
-                    add_job(n, p, a, f, user, asn, d, is_sv, dep_ok, fee_val)
+                    add_job(n, p, a, f, user, asn, d, is_sv, dep_ok, fee_val, proc_type)
                     st.success("OK!")
                     st.rerun()
                 else: st.error("Thiếu tin")
@@ -556,7 +578,7 @@ else:
                 c1.write(f"**{u['username']}** ({u['fullname']})")
                 if u['username']!=user:
                     idx = ROLES.index(u['role']) if u['role'] in ROLES else 2
-                    nr = c2.selectbox("Role", ROLES, index=idx, key=u['username'])
+                    nr = c2.selectbox("Quyền", ROLES, index=idx, key=u['username'])
                     if nr!=u['role']:
                         update_user_role(u['username'], nr)
                         st.toast("Lưu!")
