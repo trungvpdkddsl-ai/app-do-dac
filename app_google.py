@@ -13,8 +13,8 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
 # --- 1. CẤU HÌNH ---
-TELEGRAM_TOKEN = ""
-TELEGRAM_CHAT_ID = ""
+TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
+TELEGRAM_CHAT_ID = "#-5046493421"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
@@ -287,3 +287,4 @@ else:
                     nr = c2.selectbox("Role", ROLES, index=idx, key=u['username'])
                     if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Lưu!"); st.rerun()
         else: st.error("Cấm!")
+
