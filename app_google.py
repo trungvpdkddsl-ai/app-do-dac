@@ -264,7 +264,8 @@ if not st.session_state['logged_in']:
     with c2:
         nu = st.text_input("User Mới"); np = st.text_input("Pass Mới", type='password'); nn = st.text_input("Họ Tên")
         if st.button("Đăng Ký"):
-            if create_user(nu, np, nn): st.success("OK!"); else: st.error("Trùng tên!")
+            if create_user(nu, np, nn): st.success("OK!"); 
+                else: st.error("Trùng tên!")
 else:
     user = st.session_state['user']; role = st.session_state['role']
     st.sidebar.title(f"👤 {user}"); st.sidebar.info(f"{role}")
@@ -411,3 +412,4 @@ else:
                     nr = c2.selectbox("Role", ROLES, index=idx, key=u['username'])
                     if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Lưu!"); st.rerun()
         else: st.error("Cấm truy cập!")
+
