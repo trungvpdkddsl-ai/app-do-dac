@@ -44,19 +44,25 @@ def extract_links(log_text):
     return re.findall(r'(https?://[^\s]+)', str(log_text))
 
 # --- 3. KẾT NỐI GOOGLE ---
-def get_gcp_creds(): return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
+def get_gcp_creds():
+    return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
 
 def get_sheet(sheet_name="DB_DODAC"):
-    creds = get_gcp_creds(); client = gspread.authorize(creds)
+    creds = get_gcp_creds()
+    client = gspread.authorize(creds)
     try: return client.open(sheet_name).sheet1
     except: return None
 
 def get_users_sheet():
-    creds = get_gcp_creds(); client = gspread.authorize(creds)
+    creds = get_gcp_creds()
+    client = gspread.authorize(creds)
     try:
         sh = client.open("DB_DODAC")
         try: return sh.worksheet("USERS")
-        except: ws = sh.add_worksheet(title="USERS", rows="100", cols="5"); ws.append_row(["username", "password", "fullname", "role"]); return ws
+        except: 
+            ws = sh.add_worksheet(title="USERS", rows="100", cols="5")
+            ws.append_row(["username", "password", "fullname", "role"])
+            return ws
     except: return None
 
 def upload_to_drive(file_obj, folder_name):
@@ -64,42 +70,25 @@ def upload_to_drive(file_obj, folder_name):
     try:
         creds = get_gcp_creds()
         service = build('drive', 'v3', credentials=creds)
-        
-        # 1. Tìm folder gốc APP_DATA
         q = "mimeType='application/vnd.google-apps.folder' and name='APP_DATA'"
         res = service.files().list(q=q, fields="files(id)").execute()
-        if not res.get('files'): 
-            st.error("❌ Không tìm thấy thư mục APP_DATA trên Drive của Robot.")
-            return ""
+        if not res.get('files'): return ""
         pid = res['files'][0]['id']
-        
-        # 2. Tìm/Tạo folder hồ sơ
         q_sub = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{pid}' in parents"
         res_sub = service.files().list(q=q_sub, fields="files(id)").execute()
+        if res_sub.get('files'): fid = res_sub['files'][0]['id']
+        else: fid = service.files().create(body={'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [pid]}, fields='id').execute().get('id')
         
-        if res_sub.get('files'):
-            fid = res_sub['files'][0]['id']
-        else:
-            fid = service.files().create(body={'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [pid]}, fields='id').execute().get('id')
-            
-        # 3. Upload file (Thêm seek(0) để tránh lỗi file rỗng)
-        file_obj.seek(0) 
-        media = MediaIoBaseUpload(file_obj, mimetype=file_obj.type, resumable=True)
-        
-        f = service.files().create(
-            body={'name': file_obj.name, 'parents': [fid]}, 
-            media_body=media, 
-            fields='webViewLink'
-        ).execute()
-        
+        # Fix lỗi file rỗng bằng seek(0)
+        file_obj.seek(0)
+        media = MediaIoBaseUpload(file_obj, mimetype=file_obj.type)
+        f = service.files().create(body={'name': file_obj.name, 'parents': [fid]}, media_body=media, fields='webViewLink').execute()
         return f.get('webViewLink')
-        
-    except Exception as e:
-        st.error(f"❌ LỖI UPLOAD DRIVE: {str(e)}") # In lỗi ra màn hình để debug
-        return ""
+    except: return ""
 
 # --- 4. LOGIC HỆ THỐNG ---
 def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
+
 def send_telegram_msg(msg):
     if not TELEGRAM_TOKEN: return
     def run(): 
@@ -108,25 +97,43 @@ def send_telegram_msg(msg):
     threading.Thread(target=run).start()
 
 def login_user(u, p):
-    sh = get_users_sheet(); 
+    sh = get_users_sheet()
     if not sh: return None
-    try: cell = sh.find(u); row = sh.row_values(cell.row); return row if row[1] == make_hash(p) else None
-    except: return None
+    try:
+        cell = sh.find(u)
+        if cell:
+            row = sh.row_values(cell.row)
+            if row[1] == make_hash(p): return row
+    except: pass
+    return None
 
 def create_user(u, p, n):
-    sh = get_users_sheet(); 
+    sh = get_users_sheet()
     if not sh: return False
-    try: 
+    try:
         if sh.find(u): return False
-        sh.append_row([u, make_hash(p), n, "Chưa cấp quyền"]); return True
+        sh.append_row([u, make_hash(p), n, "Chưa cấp quyền"])
+        return True
     except: return False
 
-def get_all_users(): sh = get_users_sheet(); return pd.DataFrame(sh.get_all_records())
-def update_user_role(u, r): sh = get_users_sheet(); c = sh.find(u); sh.update_cell(c.row, 4, r)
-def get_active_users_list(): df = get_all_users(); return df[df['role']!='Chưa cấp quyền'].apply(lambda x: f"{x['username']} - {x['fullname']}", axis=1).tolist() if not df.empty else []
+def get_all_users():
+    sh = get_users_sheet()
+    return pd.DataFrame(sh.get_all_records())
+
+def update_user_role(u, r):
+    sh = get_users_sheet()
+    try: c = sh.find(u); sh.update_cell(c.row, 4, r)
+    except: pass
+
+def get_active_users_list():
+    df = get_all_users()
+    if df.empty: return []
+    return df[df['role']!='Chưa cấp quyền'].apply(lambda x: f"{x['username']} - {x['fullname']}", axis=1).tolist()
 
 def get_all_jobs_df():
-    sh = get_sheet(); data = sh.get_all_records(); df = pd.DataFrame(data)
+    sh = get_sheet()
+    data = sh.get_all_records()
+    df = pd.DataFrame(data)
     if not df.empty:
         df['id'] = df['id'].apply(safe_int)
         if 'deposit' not in df.columns: df['deposit'] = 0
@@ -142,11 +149,8 @@ def add_job(n, p, a, f, u, asn, d, is_survey, deposit_ok, fee_amount, proc_type)
     dl = (datetime.now()+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
     jid = int(time.time())
     
-    # Upload
     link = ""
-    if f:
-        with st.spinner("Đang upload file lên Drive..."):
-            link = upload_to_drive(f, f"{jid}_{n}")
+    if f: link = upload_to_drive(f, f"{jid}_{n}")
     
     log = f"[{now}] {u}: Khởi tạo | Thủ tục: {proc_type}"
     if link: log += f" | File: {link}"
@@ -161,18 +165,15 @@ def add_job(n, p, a, f, u, asn, d, is_survey, deposit_ok, fee_amount, proc_type)
     type_msg = f"({proc_type.upper()})"
     if is_survey: type_msg += " (CHỈ ĐO)"
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
-    send_telegram_msg(f"🚀 <b>MỚI {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}")
+    send_telegram_msg(f"🚀 <b>MỚI #{jid} {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}")
 
 def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid, proc_type):
     sh = get_sheet(); cell = sh.find(str(jid))
     if cell:
         r = cell.row; now = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); lnk = ""
         c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
-        if f: 
-             with st.spinner("Đang upload file..."):
-                lnk = upload_to_drive(f, f"{jid}_{c_name}")
+        if f: lnk = upload_to_drive(f, f"{jid}_{c_name}")
         
-        # Logic chuyển bước
         nxt = None
         if proc_type == "Chuyển quyền" and stg == "1. Tạo mới": nxt = "3. Làm hồ sơ"
         elif is_survey == 1 and stg == "3. Làm hồ sơ": nxt = "7. Hoàn thành"
@@ -187,6 +188,7 @@ def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, 
             olog = sh.cell(r, 11).value; nlog = f"\n[{now}] {u}: {stg}->{nxt} | Note: {nt}"
             if lnk: nlog += f" | File: {lnk}"
             sh.update_cell(r, 11, olog + nlog)
+            
             if nxt=="7. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
             
             code = generate_code(jid, start_t, c_name)
@@ -197,8 +199,7 @@ def update_finance_only(jid, deposit_ok, fee_amount, is_paid, u):
     if cell:
         r = cell.row
         sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
-        c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
-        code = generate_code(jid, start_t, c_name)
+        c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value; code = generate_code(jid, start_t, c_name)
         send_telegram_msg(f"💰 <b>TÀI CHÍNH</b>\n📂 <b>{code}</b>\n👤 {u}\nPhí: {fee_amount:,} VNĐ")
 
 def pause_job(jid, rs, u):
@@ -241,23 +242,29 @@ def render_progress_bar(current_stage, status):
     st.markdown(h+'</div>', unsafe_allow_html=True)
 
 # --- 6. UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V14.2", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V14.3", page_icon="☁️", layout="wide")
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 
 if not st.session_state['logged_in']:
-    st.title("🔐 Đăng nhập V14.2")
+    st.title("🔐 Đăng nhập V14.3")
     c1, c2 = st.columns(2)
     with c1:
         u = st.text_input("User"); p = st.text_input("Pass", type='password')
         if st.button("Login"):
             d = login_user(u, p)
-            if d: st.session_state['logged_in']=True; st.session_state['user']=d[0]; st.session_state['role']=d[3]; st.rerun()
-            else: st.error("Sai thông tin!")
+            if d: 
+                st.session_state['logged_in'] = True; st.session_state['user'] = d[0]; st.session_state['role'] = d[3]; st.rerun()
+            else: 
+                st.error("Sai thông tin!")
     with c2:
         nu = st.text_input("User Mới"); np = st.text_input("Pass Mới", type='password'); nn = st.text_input("Họ Tên")
         if st.button("Đăng Ký"):
-            if create_user(nu, np, nn): st.success("OK! Chờ duyệt."); else: st.error("Trùng tên!")
+            # --- ĐÃ SỬA LỖI CÚ PHÁP TẠI ĐÂY ---
+            if create_user(nu, np, nn):
+                st.success("OK! Chờ duyệt.")
+            else:
+                st.error("Trùng tên!")
 else:
     user = st.session_state['user']; role = st.session_state['role']
     st.sidebar.title(f"👤 {user}"); st.sidebar.info(f"{role}")
@@ -303,8 +310,7 @@ else:
                                 else:
                                     for link in unique_links:
                                         c_f1, c_f2 = st.columns([3, 1])
-                                        c_f1.markdown(f"🔗 [Mở Link]({link})")
-                                        c_f2.link_button("⬇️ Xem/Tải", link)
+                                        c_f1.markdown(f"🔗 [Mở Link]({link})"); c_f2.link_button("⬇️ Xem/Tải", link)
                                         if "drive.google.com" in link:
                                             preview = link.replace("/view?usp=drivesdk", "/preview").replace("/view", "/preview")
                                             st.components.v1.iframe(preview, height=400)
@@ -313,10 +319,8 @@ else:
                             with tab_info:
                                 st.subheader(f"👤 {j['customer_name']}")
                                 proc_type = j.get('procedure_type', 'Cấp đổi')
-                                is_sv = safe_int(j.get('is_survey_only'))
-                                badge_color = "blue" if proc_type == "Cấp đổi" else "orange" if proc_type == "Cấp lần đầu" else "green"
-                                st.markdown(f":{badge_color}[**Thủ tục: {proc_type}**]")
-                                if is_sv == 1: st.warning("🛠️ CHỈ ĐO ĐẠC")
+                                if safe_int(j.get('is_survey_only')) == 1: st.warning("🛠️ CHỈ ĐO ĐẠC")
+                                st.info(f"Loại: {proc_type}")
                                 
                                 c1, c2 = st.columns([1.5, 1])
                                 with c1:
@@ -328,7 +332,7 @@ else:
                                         if not dep_ok: st.caption("🔴 Chưa thu tạm ứng")
                                         fee = st.number_input("Phí đo đạc", value=fee_val, step=100000)
                                         paid_ok = st.checkbox("Đã thu đủ tiền?", value=paid_val)
-                                        if st.form_submit_button("💾 Lưu Tài Chính"): update_finance_only(j['id'], dep_ok, fee, paid_ok, user); st.success("Lưu!"); time.sleep(0.5); st.rerun()
+                                        if st.form_submit_button("💾 Lưu Tài Chính"): update_finance_only(j['id'], dep_ok, fee, paid_ok, user); st.success("Đã lưu!"); time.sleep(0.5); st.rerun()
                                     
                                     st.markdown("#### 📜 Nhật ký")
                                     with st.container(border=True):
@@ -347,7 +351,8 @@ else:
                                         st.write("👉 **Chuyển bước**")
                                         with st.form(f"f{j['id']}"):
                                             nt = st.text_area("Ghi chú"); fl = st.file_uploader("Upload File")
-                                            cur = j['current_stage']; is_sv = safe_int(j.get('is_survey_only')); proc = j.get('procedure_type', 'Cấp đổi')
+                                            cur = j['current_stage']; is_sv = safe_int(j.get('is_survey_only'))
+                                            proc = j.get('procedure_type', 'Cấp đổi')
                                             
                                             if proc == "Chuyển quyền" and cur == "1. Tạo mới": nxt = "3. Làm hồ sơ"
                                             elif is_sv == 1 and cur == "3. Làm hồ sơ": nxt = "7. Hoàn thành"
@@ -365,6 +370,7 @@ else:
                                         c_stop1, c_stop2 = st.columns(2)
                                         if c_stop1.button("⏸️ Dừng", key=f"p{j['id']}"): st.session_state[f'pm_{j['id']}'] = True
                                         if c_stop2.button("⏹️ Kết thúc", key=f"t{j['id']}"): st.session_state[f'tm_{j['id']}'] = True
+                                        
                                         if st.session_state.get(f'pm_{j['id']}', False):
                                             rs = st.text_input("Lý do dừng:", key=f"rs{j['id']}")
                                             if st.button("OK Dừng", key=f"okp{j['id']}"): pause_job(j['id'], rs, user); st.rerun()
@@ -373,6 +379,7 @@ else:
                                             if st.button("OK Kết thúc", key=f"okt{j['id']}"): terminate_job(j['id'], rst, user); st.rerun()
         except Exception as e: st.error(f"Lỗi: {e}")
 
+    # --- CÁC TAB KHÁC GIỮ NGUYÊN ---
     elif sel == "💰 Công Nợ":
         st.title("💰 Quản Lý Công Nợ")
         try:
@@ -414,6 +421,6 @@ else:
                 c1, c2 = st.columns([2, 2]); c1.write(f"**{u['username']}** ({u['fullname']})")
                 if u['username']!=user:
                     idx = ROLES.index(u['role']) if u['role'] in ROLES else 2
-                    nr = c2.selectbox("Role", ROLES, index=idx, key=u['username'])
+                    nr = c2.selectbox("Quyền", ROLES, index=idx, key=u['username'])
                     if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Lưu!"); st.rerun()
         else: st.error("Cấm truy cập!")
