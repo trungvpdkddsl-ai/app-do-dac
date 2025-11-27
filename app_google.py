@@ -27,6 +27,17 @@ WORKFLOW_DEFAULT = {
     "4. Ký hồ sơ": "5. Lấy hồ sơ", "5. Lấy hồ sơ": "6. Nộp hồ sơ", "6. Nộp hồ sơ": "7. Hoàn thành", "7. Hoàn thành": None
 }
 
+# [MỚI] CẤU HÌNH THỜI GIAN GIỚI HẠN CHO TỪNG BƯỚC (SLA - Đơn vị: Giờ)
+# Nếu hồ sơ nằm ở bước này quá số giờ quy định sẽ bị báo động đỏ
+STAGE_SLA_HOURS = {
+    "1. Tạo mới": 24,      # Phải đi đo trong vòng 24h
+    "2. Đo đạc": 48,       # Đo xong phải xử lý trong 48h
+    "3. Làm hồ sơ": 24,    # Làm xong phải trình ký trong 24h
+    "4. Ký hồ sơ": 72,     # Ký tá thường lâu hơn (3 ngày)
+    "5. Lấy hồ sơ": 24,    # Ký xong phải đi lấy ngay
+    "6. Nộp hồ sơ": 360,   # Nộp nhà nước (15 ngày - 360h)
+}
+
 # --- 2. HÀM HỖ TRỢ & KẾT NỐI ---
 def safe_int(value):
     try: return int(float(str(value).replace(",", "").replace(".", ""))) if pd.notna(value) and value != "" else 0
@@ -39,16 +50,30 @@ def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
     return match.group(1) if match else ""
 
-# [MỚI] THUẬT TOÁN TÍNH NGÀY (BỎ QUA T7, CN)
-def calculate_deadline(start_date, days_to_add):
-    current_date = start_date
-    added_days = 0
-    while added_days < days_to_add:
-        current_date += timedelta(days=1)
-        # weekday(): 0=Thứ 2, ..., 5=Thứ 7, 6=Chủ Nhật
-        if current_date.weekday() < 5: # Chỉ tính nếu là Thứ 2 - Thứ 6
-            added_days += 1
-    return current_date
+# [MỚI] HÀM KIỂM TRA ĐIỂM NGHẼN (BOTTLENECK CHECK)
+def check_bottleneck(logs, current_stage):
+    if current_stage == "7. Hoàn thành" or not logs: return False, 0, 0
+    
+    # Lấy dòng log cuối cùng để xem thời gian cập nhật gần nhất
+    try:
+        lines = str(logs).strip().split('\n')
+        last_line = lines[-1]
+        # Tìm timestamp dạng [YYYY-MM-DD HH:MM:SS]
+        match = re.search(r'\[(.*?)\]', last_line)
+        if match:
+            last_time_str = match.group(1)
+            last_dt = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
+            
+            # Tính khoảng thời gian đã trôi qua (giờ)
+            hours_passed = (datetime.now() - last_dt).total_seconds() / 3600
+            
+            # Lấy giới hạn cho bước hiện tại
+            limit = STAGE_SLA_HOURS.get(current_stage, 9999) # Mặc định 9999h nếu không quy định
+            
+            if hours_passed > limit:
+                return True, int(hours_passed), limit
+    except: pass
+    return False, 0, 0
 
 def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
     try:
@@ -86,6 +111,13 @@ def render_contact_buttons(phone):
     """
     return html
 
+def calculate_deadline(start_date, days_to_add):
+    current_date = start_date; added_days = 0
+    while added_days < days_to_add:
+        current_date += timedelta(days=1)
+        if current_date.weekday() < 5: added_days += 1
+    return current_date
+
 def get_drive_id(link):
     try: match = re.search(r'/d/([a-zA-Z0-9_-]+)', link); return match.group(1) if match else None
     except: return None
@@ -119,9 +151,7 @@ def log_to_audit(user, action, details):
     def _log():
         try:
             ws = get_audit_sheet()
-            if ws:
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ws.append_row([now, user, action, details])
+            if ws: ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user, action, details])
         except: pass
     threading.Thread(target=_log).start()
 
@@ -134,8 +164,7 @@ def upload_to_drive(file_obj, sub_folder_name):
         response = requests.post(APPS_SCRIPT_URL, json=payload)
         if response.status_code == 200:
             res_json = response.json()
-            if res_json.get("status") == "success":
-                return res_json.get("link"), file_obj.name
+            if res_json.get("status") == "success": return res_json.get("link"), file_obj.name
     except: pass
     return None, None
 
@@ -162,8 +191,7 @@ def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
 def send_telegram_msg(msg):
     if not TELEGRAM_TOKEN: return
     def run(): 
-        try: 
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"})
+        try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"})
         except Exception as e: print(f"Tele Error: {e}")
     threading.Thread(target=run).start()
 
@@ -204,15 +232,10 @@ def get_daily_sequence_id():
     else: max_seq = max([int(jid[-2:]) for jid in today_ids]); seq = max_seq + 1
     return int(f"{prefix}{seq:02}"), f"{seq:02}"
 
-# --- 3. LOGIC NGHIỆP VỤ (ĐÃ ÁP DỤNG THUẬT TOÁN TÍNH NGÀY) ---
+# --- 3. LOGIC NGHIỆP VỤ ---
 def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     sh = get_sheet(); now = datetime.now(); now_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    date_code = now.strftime('%d%m%Y')
-    
-    # [CẬP NHẬT] Tính deadline bỏ qua T7, CN
-    deadline_dt = calculate_deadline(now, d)
-    dl = deadline_dt.strftime("%Y-%m-%d %H:%M:%S")
-    
+    date_code = now.strftime('%d%m%Y'); dl_dt = calculate_deadline(now, d); dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
     jid, seq_str = get_daily_sequence_id()
     phone_db = f"'{p}" 
     full_name_str = generate_unique_name(jid, now_str, n, p, a, proc)
@@ -221,9 +244,7 @@ def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     if f: 
         for uploaded_file in f:
             l, n_f = upload_to_drive(uploaded_file, full_name_str)
-            if l:
-                log_file_str += f" | File: {n_f} - {l}"
-                if link == "": link = l; fname = n_f
+            if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
 
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
     log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{log_file_str}"
@@ -264,7 +285,6 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
                 new_deadline = result_date.strftime("%Y-%m-%d %H:%M:%S")
                 sh.update_cell(r, 9, new_deadline); nt += f" (Hẹn trả: {result_date.strftime('%d/%m/%Y')})"
             else:
-                # [CẬP NHẬT] Tính deadline bỏ qua T7, CN
                 new_dl = calculate_deadline(datetime.now(), d)
                 sh.update_cell(r, 9, new_dl.strftime("%Y-%m-%d %H:%M:%S"))
             
@@ -290,7 +310,6 @@ def return_to_previous_stage(jid, current_stage, reason, u):
                 sh.update_cell(r, 11, olog + nlog)
                 row_data = sh.row_values(r)
                 full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
-                
                 log_to_audit(u, "RETURN_JOB", f"ID: {jid}, {current_stage} -> {prev_stage}")
                 send_telegram_msg(f"↩️ <b>TRẢ HỒ SƠ</b>\n📂 <b>{full_code}</b>\n{current_stage} ➡ <b>{prev_stage}</b>\n👤 Bởi: {u}\n⚠️ Lý do: {reason}")
                 return True
@@ -339,23 +358,28 @@ def terminate_job(jid, rs, u):
 def move_to_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.update_cell(r, 7, "Đã xóa")
-        log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}")
-        st.toast("Đã chuyển vào thùng rác!")
+        sh.update_cell(r, 7, "Đã xóa"); log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}"); st.toast("Đã chuyển vào thùng rác!")
 
 def restore_from_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.update_cell(r, 7, "Đang xử lý")
-        log_to_audit(u, "RESTORE_JOB", f"ID: {jid}")
-        st.toast("Đã khôi phục hồ sơ!")
+        sh.update_cell(r, 7, "Đang xử lý"); log_to_audit(u, "RESTORE_JOB", f"ID: {jid}"); st.toast("Đã khôi phục hồ sơ!")
 
 def delete_forever(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.delete_rows(r)
-        log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}")
-        st.toast("Đã xóa vĩnh viễn!")
+        sh.delete_rows(r); log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}"); st.toast("Đã xóa vĩnh viễn!")
+
+# [MỚI] HÀM QUÉT ĐIỂM NGHẼN CHO ADMIN
+def scan_bottlenecks(df):
+    bottlenecks = []
+    for _, j in df.iterrows():
+        is_stuck, hours, limit = check_bottleneck(j['logs'], j['current_stage'])
+        if is_stuck and j['status'] == "Đang xử lý":
+            proc_name = extract_proc_from_log(j['logs'])
+            name = generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", proc_name)
+            bottlenecks.append(f"⚠️ **{name}**\n- Kẹt ở: {j['current_stage']}\n- Thời gian: {hours}h (Giới hạn: {limit}h)")
+    return bottlenecks
 
 # --- 4. UI COMPONENTS ---
 def render_progress_bar(current_stage, status):
@@ -383,9 +407,18 @@ def render_job_card(j, user, role):
     dl_status = "HÔM NAY" if dl_dt.date() == now.date() else f"Còn {(dl_dt - now).days} ngày"
     if dl_dt < now: dl_status = "QUÁ HẠN"
     
+    # [MỚI] KIỂM TRA ĐIỂM NGHẼN ĐỂ HIỆN CẢNH BÁO
+    is_stuck, hours, limit = check_bottleneck(j['logs'], j['current_stage'])
+    stuck_warning = ""
+    if is_stuck and j['status'] == "Đang xử lý":
+        stuck_warning = f" | ⚠️ **CẢNH BÁO: Kẹt {hours}h (Max {limit}h)**"
+    
     icon = "⛔" if j['status']=='Tạm dừng' else "⏹️" if j['status']=='Kết thúc sớm' else ("🔴" if dl_dt < now else "🟡" if dl_dt <= now+timedelta(days=1) else "🟢")
     
-    with st.expander(f"{icon} {code_display} | {j['current_stage']}"):
+    with st.expander(f"{icon} {code_display} | {j['current_stage']}{stuck_warning}"):
+        if is_stuck and j['status'] == "Đang xử lý":
+            st.error(f"⚠️ Hồ sơ này đã ở bước '{j['current_stage']}' quá {limit} giờ! Vui lòng xử lý gấp.")
+            
         st.info(f"📅 **Hạn hoàn thành (Ngày trả kết quả): {dl_str}** | Trạng thái: **{dl_status}**")
         render_progress_bar(j['current_stage'], j['status'])
         t1, t2, t3, t4 = st.tabs(["ℹ️ Thông tin & File", "⚙️ Xử lý Hồ sơ", "💰 Tài Chính", "📜 Nhật ký"])
@@ -522,12 +555,19 @@ else:
             warning_window = now + timedelta(hours=48)
             warning_jobs = my_df[(my_df['dl_dt'] > now) & (my_df['dl_dt'] <= warning_window)]
             
+            # [MỚI] Nút Admin quét điểm nghẽn
+            if role == "Quản lý":
+                if c_note.button("🔍 Quét Hồ Sơ Chậm (Bottleneck)"):
+                    issues = scan_bottlenecks(active_df)
+                    if issues:
+                        msg = "🚨 **CẢNH BÁO ĐIỂM NGHẼN:**\n\n" + "\n\n".join(issues)
+                        send_telegram_msg(msg)
+                        st.toast(f"Đã gửi {len(issues)} cảnh báo qua Telegram!")
+                    else: st.toast("Hệ thống hoạt động tốt, không có điểm nghẽn.")
+
             with c_note:
                 if not warning_jobs.empty:
-                    st.warning(f"🔔 **LƯU Ý: Có {len(warning_jobs)} hồ sơ hết hạn trong 48h tới!**")
-                    with st.expander("Xem chi tiết"):
-                        for _, wj in warning_jobs.iterrows():
-                            st.write(f"• {wj['customer_name']} (Hạn: {wj['dl_dt'].strftime('%d/%m %H:%M')})")
+                    st.warning(f"🔔 **Sắp hết hạn: {len(warning_jobs)} hồ sơ (48h)**")
             
             with c_title: st.title("📋 Tiến trình hồ sơ")
 
@@ -548,6 +588,7 @@ else:
                 st.caption(f"Đang hiển thị: {st.session_state['job_filter'].upper()} ({len(display_df)} hồ sơ)")
                 for i, j in display_df.iterrows(): render_job_card(j, user, role)
 
+    # ... (Các tab khác giữ nguyên như cũ)
     elif sel == "📝 Tạo Hồ Sơ":
         st.title("Tạo Hồ Sơ")
         with st.form("new"):
