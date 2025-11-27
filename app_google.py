@@ -12,7 +12,7 @@ from google.oauth2.service_account import Credentials
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
-TELEGRAM_CHAT_ID = "-5046493421"
+TELEGRAM_CHAT_ID = "-5046493421" # Đảm bảo ID nhóm đúng
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
 # ==============================================================================
@@ -41,15 +41,22 @@ def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
     return match.group(1) if match else ""
 
-def generate_display_name(jid, start_time, name, phone, addr, proc_name):
+# [QUAN TRỌNG] Hàm tạo tên chuẩn duy nhất (Dùng cho cả hiển thị và đặt tên folder)
+def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
     try:
-        jid_str = str(jid); seq = jid_str[-2:] 
+        jid_str = str(jid); seq = jid_str[-2:] # Lấy 2 số cuối ID
         d_obj = datetime.strptime(str(start_time), "%Y-%m-%d %H:%M:%S")
-        date_str = d_obj.strftime('%d%m%y')
+        date_str = d_obj.strftime('%d%m%y') # 271125
     except: date_str = "000000"; seq = "00"
+    
     abbr = get_proc_abbr(proc_name) if proc_name else ""
     proc_str = f"-{abbr}" if abbr else ""
-    return f"{date_str}-{seq}{proc_str} {name} {phone} {addr}"
+    
+    # Xử lý số điện thoại: Xóa dấu ' nếu có để hiển thị đẹp
+    clean_phone = str(phone).replace("'", "")
+    
+    # KẾT QUẢ ĐỒNG NHẤT: 271125-04-CLD lê trung 09123412 long biên
+    return f"{date_str}-{seq}{proc_str} {name} {clean_phone} {addr}"
 
 def extract_files_from_log(log_text):
     pattern = r"File: (.*?) - (https?://[^\s]+)"
@@ -81,7 +88,6 @@ def get_users_sheet():
 
 def upload_to_drive(file_obj, sub_folder_name):
     if not file_obj: return None, None
-    # status_box = st.empty(); status_box.info(f"☁️ Đang tải '{file_obj.name}'...") # Tắt thông báo lẻ để tránh rối khi up nhiều file
     try:
         file_content = file_obj.read()
         file_base64 = base64.b64encode(file_content).decode('utf-8')
@@ -90,7 +96,6 @@ def upload_to_drive(file_obj, sub_folder_name):
         if response.status_code == 200:
             res_json = response.json()
             if res_json.get("status") == "success":
-                # status_box.empty()
                 return res_json.get("link"), file_obj.name
     except: pass
     return None, None
@@ -116,8 +121,9 @@ def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
 def send_telegram_msg(msg):
     if not TELEGRAM_TOKEN: return
     def run(): 
-        try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"})
-        except: pass
+        try: 
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"})
+        except Exception as e: print(f"Tele Error: {e}")
     threading.Thread(target=run).start()
 
 def login_user(u, p):
@@ -157,56 +163,60 @@ def get_daily_sequence_id():
     else: max_seq = max([int(jid[-2:]) for jid in today_ids]); seq = max_seq + 1
     return int(f"{prefix}{seq:02}"), f"{seq:02}"
 
-# --- 3. LOGIC NGHIỆP VỤ ---
+# --- 3. LOGIC NGHIỆP VỤ (ĐÃ SỬA LỖI ĐỒNG BỘ) ---
 def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     sh = get_sheet(); now = datetime.now(); now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     date_code = now.strftime('%d%m%Y'); dl = (now+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
     jid, seq_str = get_daily_sequence_id()
-    abbr = get_proc_abbr(proc)
     
-    full_code_str = f"{date_code}-{seq_str}-{abbr} {n} {p} {a}"
+    # [FIX] Ép kiểu SĐT thành chuỗi có dấu ' để giữ số 0
+    phone_db = f"'{p}" 
     
-    # Upload list file (nếu có)
+    # [FIX] Tên Folder đồng nhất ngay từ đầu
+    full_name_str = generate_unique_name(jid, now_str, n, p, a, proc)
+    
+    # Upload vào folder đúng tên
     link = ""; fname = ""
     log_file_str = ""
-    
-    if f: # f is a list now
-        sub_folder = full_code_str
+    if f: 
         for uploaded_file in f:
-            l, n_f = upload_to_drive(uploaded_file, sub_folder)
+            l, n_f = upload_to_drive(uploaded_file, full_name_str) # Upload vào folder full tên
             if l:
                 log_file_str += f" | File: {n_f} - {l}"
-                if link == "": link = l; fname = n_f # Lưu file đầu tiên làm đại diện
+                if link == "": link = l; fname = n_f
 
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
     log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{log_file_str}"
     
     asn_clean = asn.split(" - ")[0] if asn else ""
     sv_flag = 1 if is_survey else 0; dep_flag = 1 if deposit_ok else 0
-    sh.append_row([jid, now_str, n, p, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
+    
+    # Lưu Phone vào DB có dấu '
+    sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
     
     type_msg = f"({proc.upper()})"
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
     file_msg = f"\n📎 Có {len(f)} file đính kèm" if f else ""
     assign_msg = f"👉 <b>{asn_clean}</b>"
     
-    send_telegram_msg(f"🚀 <b>MỚI #{seq_str} {type_msg}</b>\n📂 <b>{full_code_str}</b>\n{assign_msg}\n💰 {money_msg}{file_msg}")
+    # Gửi Tele dùng tên full
+    send_telegram_msg(f"🚀 <b>MỚI #{seq_str} {type_msg}</b>\n📂 <b>{full_name_str}</b>\n{assign_msg}\n💰 {money_msg}{file_msg}")
 
-# [ĐÃ SỬA: Hỗ trợ upload nhiều file + Cập nhật hạn trả kết quả]
 def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid, result_date=None):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
         row_data = sh.row_values(r)
-        full_code = generate_display_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
+        # [FIX] Tái tạo lại tên folder chính xác từ dữ liệu gốc
+        proc_name = extract_proc_from_log(row_data[10])
+        full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], proc_name)
+        
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Xử lý Upload nhiều file
+        # Upload vào đúng folder full tên
         log_file_str = ""
-        c_name = row_data[2]
-        sub_folder = f"{int(jid)}_{c_name}"
         if f_list:
             for uploaded_file in f_list:
-                l, n_f = upload_to_drive(uploaded_file, sub_folder)
+                l, n_f = upload_to_drive(uploaded_file, full_code) # <-- DÙNG FULL CODE
                 if l: log_file_str += f" | File: {n_f} - {l}"
 
         nxt = "7. Hoàn thành" if is_survey==1 and stg=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(stg)
@@ -218,14 +228,11 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
                 assign_clean = asn.split(" - ")[0]; sh.update_cell(r, 8, assign_clean)
                 assign_str = f" -> Giao: {assign_clean}"; assign_tele = f"\n👉 Giao: <b>{assign_clean}</b>"
             
-            # [LOGIC NGÀY TRẢ KẾT QUẢ]
             if result_date:
-                # Nếu có ngày trả kết quả (từ bước Nộp hồ sơ), cập nhật vào cột deadline (cột 9)
                 new_deadline = result_date.strftime("%Y-%m-%d %H:%M:%S")
                 sh.update_cell(r, 9, new_deadline)
-                nt += f" (Đã nộp. Hẹn trả: {result_date.strftime('%d/%m/%Y')})"
+                nt += f" (Hẹn trả: {result_date.strftime('%d/%m/%Y')})"
             else:
-                # Cộng ngày thường
                 sh.update_cell(r, 9, (datetime.now()+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S"))
             
             sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
@@ -237,7 +244,6 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
             
             send_telegram_msg(f"✅ <b>CẬP NHẬT</b>\n📂 <b>{full_code}</b>\n{stg} ➡ <b>{nxt}</b>\n👤 {u}{assign_tele}")
 
-# [MỚI] HÀM QUAY LẠI BƯỚC TRƯỚC (TRẢ HỒ SƠ)
 def return_to_previous_stage(jid, current_stage, reason, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
@@ -245,19 +251,13 @@ def return_to_previous_stage(jid, current_stage, reason, u):
             curr_idx = STAGES_ORDER.index(current_stage)
             if curr_idx > 0:
                 prev_stage = STAGES_ORDER[curr_idx - 1]
-                
-                # Cập nhật trạng thái lùi
                 sh.update_cell(r, 6, prev_stage)
-                
-                # Ghi Log
                 olog = sh.cell(r, 11).value
                 nlog = f"\n[{datetime.now()}] {u}: ⬅️ TRẢ HỒ SƠ ({current_stage} -> {prev_stage}) | Lý do: {reason}"
                 sh.update_cell(r, 11, olog + nlog)
                 
-                # Lấy info gửi Tele
                 row_data = sh.row_values(r)
-                full_code = generate_display_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
-                
+                full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
                 send_telegram_msg(f"↩️ <b>TRẢ HỒ SƠ</b>\n📂 <b>{full_code}</b>\n{current_stage} ➡ <b>{prev_stage}</b>\n👤 Bởi: {u}\n⚠️ Lý do: {reason}")
                 return True
         except: return False
@@ -267,7 +267,7 @@ def update_finance_only(jid, deposit_ok, fee_amount, is_paid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
         row_data = sh.row_values(r)
-        full_code = generate_display_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
+        full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
         send_telegram_msg(f"💰 <b>TÀI CHÍNH</b>\n📂 <b>{full_code}</b>\n👤 {u}\nPhí: {fee_amount:,} VNĐ")
 
@@ -275,7 +275,7 @@ def pause_job(jid, rs, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
         row_data = sh.row_values(r)
-        full_code = generate_display_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
+        full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 7, "Tạm dừng")
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
         send_telegram_msg(f"⛔ <b>TẠM DỪNG</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
@@ -284,7 +284,7 @@ def resume_job(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
         row_data = sh.row_values(r)
-        full_code = generate_display_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
+        full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 7, "Đang xử lý")
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
         send_telegram_msg(f"▶️ <b>KHÔI PHỤC</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}")
@@ -293,7 +293,7 @@ def terminate_job(jid, rs, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
         row_data = sh.row_values(r)
-        full_code = generate_display_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
+        full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 7, "Kết thúc sớm")
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
@@ -302,7 +302,7 @@ def delete_job_permanently(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
         row_data = sh.row_values(r)
-        full_code = generate_display_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
+        full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.delete_rows(r)
         send_telegram_msg(f"🗑️ <b>ĐÃ XÓA HỒ SƠ</b>\n📂 {full_code}\n👤 Bởi Admin: {u}")
 
@@ -323,10 +323,9 @@ def render_progress_bar(current_stage, status):
 
 def render_job_card(j, user, role):
     proc_name = extract_proc_from_log(j['logs'])
-    code_display = generate_display_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
+    # Dùng hàm chuẩn hóa tên
+    code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
     now = datetime.now()
-    
-    # [STICKY NOTE] Xử lý hiển thị ngày trả kết quả/Deadline
     try: dl_dt = pd.to_datetime(j['deadline'])
     except: dl_dt = now + timedelta(days=365)
     
@@ -337,9 +336,7 @@ def render_job_card(j, user, role):
     icon = "⛔" if j['status']=='Tạm dừng' else "⏹️" if j['status']=='Kết thúc sớm' else ("🔴" if dl_dt < now else "🟡" if dl_dt <= now+timedelta(days=1) else "🟢")
     
     with st.expander(f"{icon} {code_display} | {j['current_stage']}"):
-        # [STICKY NOTE] Hiển thị ngay đầu Expander
         st.info(f"📅 **Hạn hoàn thành (Ngày trả kết quả): {dl_str}** | Trạng thái: **{dl_status}**")
-        
         render_progress_bar(j['current_stage'], j['status'])
         t1, t2, t3, t4 = st.tabs(["ℹ️ Thông tin & File", "⚙️ Xử lý Hồ sơ", "💰 Tài Chính", "📜 Nhật ký"])
         
@@ -366,7 +363,6 @@ def render_job_card(j, user, role):
                                 st.write("Xóa file này?")
                                 if st.button("Xóa ngay", key=f"del_{j['id']}_{idx}_{int(time.time())}"):
                                     delete_file_system(j['id'], link, fname); st.toast("Đã xóa file!"); time.sleep(1); st.rerun()
-            
             if role == "Quản lý":
                 st.divider()
                 with st.container():
@@ -374,8 +370,7 @@ def render_job_card(j, user, role):
                     with st.popover("🗑️ Xóa Hồ Sơ Này", use_container_width=True):
                         st.error("Hành động này sẽ xóa vĩnh viễn hồ sơ!")
                         if st.button("XÁC NHẬN XÓA", key=f"perm_del_{j['id']}", type="primary"):
-                            delete_job_permanently(j['id'], user)
-                            st.toast("Đã xóa hồ sơ!"); time.sleep(1.5); st.rerun()
+                            delete_job_permanently(j['id'], user); st.toast("Đã xóa hồ sơ!"); time.sleep(1.5); st.rerun()
 
         with t2:
             if j['status'] in ['Tạm dừng', 'Kết thúc sớm']:
@@ -384,43 +379,34 @@ def render_job_card(j, user, role):
             else:
                 with st.form(f"f{j['id']}"):
                     nt = st.text_area("Ghi chú")
-                    # [MỚI] Cho phép upload nhiều file
                     fl = st.file_uploader("Upload File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
-                    
                     cur = j['current_stage']; nxt = "7. Hoàn thành" if safe_int(j.get('is_survey_only'))==1 and cur=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(cur)
-                    
                     result_date = None
                     if nxt and nxt!="7. Hoàn thành":
                         st.write(f"Chuyển sang: **{nxt}**")
-                        # [MỚI] Nếu đang ở bước "6. Nộp hồ sơ", hiện form chọn ngày
                         if cur == "6. Nộp hồ sơ":
                             st.info("📅 Thông tin nộp hồ sơ")
                             col_n1, col_n2 = st.columns(2)
                             submit_date = col_n1.date_input("Ngày nộp", datetime.now())
                             result_date = col_n2.date_input("Ngày trả kết quả", datetime.now() + timedelta(days=15))
-                            asn = st.selectbox("Giao theo dõi", get_active_users_list()); d = 0 # Deadline lấy theo ngày trả kết quả
+                            asn = st.selectbox("Giao theo dõi", get_active_users_list()); d = 0 
                         else:
                             asn = st.selectbox("Giao", get_active_users_list()); d = st.number_input("Hạn (Ngày)", value=2)
                     else: st.info("Kết thúc"); asn=""; d=0
-                    
                     if st.form_submit_button("✅ Chuyển bước"): 
                         dep = 1 if safe_int(j.get('deposit'))==1 else 0; money = safe_int(j.get('survey_fee')); pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
-                        # Truyền result_date vào hàm update
                         update_stage(j['id'], cur, nt, fl, user, asn, d, safe_int(j.get('is_survey_only')), dep, money, pdone, result_date)
                         st.session_state['uploader_key'] += 1; st.success("Xong!"); time.sleep(0.5); st.rerun()
                 
                 c_stop1, c_stop2, c_back = st.columns([1, 1, 1])
                 if c_stop1.button("⏸️ Dừng", key=f"p{j['id']}"): st.session_state[f'pm_{j['id']}'] = True
                 if c_stop2.button("⏹️ Kết thúc", key=f"t{j['id']}"): st.session_state[f'tm_{j['id']}'] = True
-                
-                # [MỚI] Nút Quay lại
                 with c_back.popover("⬅️ Trả hồ sơ", use_container_width=True):
-                    reason_back = st.text_input("Lý do trả lại:", key=f"reason_back_{j['id']}")
-                    if st.button("Xác nhận trả", key=f"btn_back_{j['id']}"):
+                    reason_back = st.text_input("Lý do:", key=f"reason_back_{j['id']}")
+                    if st.button("Xác nhận", key=f"btn_back_{j['id']}"):
                         if return_to_previous_stage(j['id'], j['current_stage'], reason_back, user):
                             st.success("Đã trả hồ sơ!"); time.sleep(1); st.rerun()
-                        else:
-                            st.error("Không thể quay lại bước trước!")
+                        else: st.error("Lỗi!")
 
                 if st.session_state.get(f'pm_{j['id']}', False):
                     rs = st.text_input("Lý do dừng:", key=f"rs{j['id']}"); 
@@ -492,7 +478,7 @@ else:
             c3, c4 = st.columns([1, 1])
             with c3: is_sv = st.checkbox("🛠️ CHỈ ĐO ĐẠC")
             with c4: proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
-            f = st.file_uploader("File", accept_multiple_files=True, key=f"new_up_{st.session_state['uploader_key']}")
+            f = st.file_uploader("File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"new_up_{st.session_state['uploader_key']}")
             st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
             asn = st.selectbox("Giao:", get_active_users_list()); d = st.number_input("Hạn (Ngày)", value=1)
             if st.form_submit_button("Tạo Hồ Sơ"):
@@ -509,7 +495,7 @@ else:
                 unpaid = df[df['is_paid'].apply(safe_int) == 0]
                 st.metric("Tổng hồ sơ chưa thu tiền", len(unpaid))
                 if not unpaid.empty:
-                    unpaid['Mã'] = unpaid.apply(lambda x: generate_display_name(x['id'], x['start_time'], x['customer_name'], x['customer_phone'], x['address'], extract_proc_from_log(x['logs'])), axis=1)
+                    unpaid['Mã'] = unpaid.apply(lambda x: generate_unique_name(x['id'], x['start_time'], x['customer_name'], x['customer_phone'], x['address'], extract_proc_from_log(x['logs'])), axis=1)
                     st.dataframe(unpaid[['Mã', 'survey_fee', 'deposit']], use_container_width=True)
                 else: st.success("Sạch nợ!")
         except: pass
@@ -530,7 +516,7 @@ else:
             else: filtered_df = df
             if q:
                 search_df = filtered_df.copy()
-                search_df['display_id'] = search_df.apply(lambda x: generate_display_name(x['id'], x['start_time'], x['customer_name'], x['customer_phone'], x['address'], extract_proc_from_log(x['logs'])), axis=1)
+                search_df['display_id'] = search_df.apply(lambda x: generate_unique_name(x['id'], x['start_time'], x['customer_name'], x['customer_phone'], x['address'], extract_proc_from_log(x['logs'])), axis=1)
                 m1 = search_df['display_id'].astype(str).str.contains(q, case=False, na=False)
                 m2 = search_df['customer_name'].astype(str).str.contains(q, case=False, na=False)
                 m3 = search_df['customer_phone'].astype(str).str.contains(q, case=False, na=False)
@@ -575,7 +561,7 @@ else:
                 st.divider()
                 st.subheader("📄 Danh sách chi tiết")
                 view_df = filtered_df.copy()
-                view_df['Mã Hồ Sơ'] = view_df.apply(lambda x: generate_display_name(x['id'], x['start_time'], x['customer_name'], "", "", ""), axis=1)
+                view_df['Mã Hồ Sơ'] = view_df.apply(lambda x: generate_unique_name(x['id'], x['start_time'], x['customer_name'], "", "", ""), axis=1)
                 view_df['Phí'] = view_df['survey_fee'].apply(lambda x: f"{safe_int(x):,} đ")
                 final_view = view_df[['Mã Hồ Sơ', 'customer_name', 'current_stage', 'assigned_to', 'Phí']]
                 final_view.columns = ['Mã', 'Khách', 'Tiến Độ', 'Người Xử Lý', 'Phí']
