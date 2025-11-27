@@ -14,7 +14,7 @@ from googleapiclient.http import MediaIoBaseUpload
 # --- 1. CẤU HÌNH ---
 
 TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
-TELEGRAM_CHAT_ID = "#-5046493421"
+TELEGRAM_CHAT_ID = "-5046493421" 
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
@@ -44,12 +44,21 @@ def generate_code(jid, start, name):
 def extract_links(log_text):
     return re.findall(r'(https?://[^\s]+)', str(log_text))
 
+# [MỚI] Hàm lấy ID từ link Google Drive để tạo link tải trực tiếp
+def get_drive_id(link):
+    try:
+        match = re.search(r'/d/([a-zA-Z0-9_-]+)', link)
+        return match.group(1) if match else None
+    except: return None
+
 # --- 3. KẾT NỐI GOOGLE ---
 def get_gcp_creds(): return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
+
 def get_sheet(sheet_name="DB_DODAC"):
     creds = get_gcp_creds(); client = gspread.authorize(creds)
     try: return client.open(sheet_name).sheet1
     except: return None
+
 def get_users_sheet():
     creds = get_gcp_creds(); client = gspread.authorize(creds)
     try:
@@ -61,26 +70,48 @@ def get_users_sheet():
             return ws
     except: return None
 
+# [CẬP NHẬT QUAN TRỌNG] Hàm upload có set quyền công khai
 def upload_to_drive(file_obj, folder_name):
     if not file_obj: return ""
     try:
         creds = get_gcp_creds(); service = build('drive', 'v3', credentials=creds)
+        
+        # 1. Tìm hoặc tạo folder cha APP_DATA
         q = "mimeType='application/vnd.google-apps.folder' and name='APP_DATA'"
         res = service.files().list(q=q, fields="files(id)").execute()
-        if not res.get('files'): return ""
-        pid = res['files'][0]['id']
+        if not res.get('files'): 
+            pid = service.files().create(body={'name': 'APP_DATA', 'mimeType': 'application/vnd.google-apps.folder'}, fields='id').execute().get('id')
+        else:
+            pid = res['files'][0]['id']
+            
+        # 2. Tìm hoặc tạo folder con (theo Job)
         q_sub = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{pid}' in parents"
         res_sub = service.files().list(q=q_sub, fields="files(id)").execute()
-        fid = res_sub['files'][0]['id'] if res_sub.get('files') else service.files().create(body={'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [pid]}, fields='id').execute().get('id')
         
+        if res_sub.get('files'):
+            fid = res_sub['files'][0]['id']
+        else:
+            fid = service.files().create(body={'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [pid]}, fields='id').execute().get('id')
+            # Set quyền folder con công khai luôn cho tiện
+            service.permissions().create(fileId=fid, body={'type': 'anyone', 'role': 'reader'}).execute()
+        
+        # 3. Upload File
         file_obj.seek(0)
         media = MediaIoBaseUpload(file_obj, mimetype=file_obj.type)
-        f = service.files().create(body={'name': file_obj.name, 'parents': [fid]}, media_body=media, fields='webViewLink').execute()
+        f = service.files().create(body={'name': file_obj.name, 'parents': [fid]}, media_body=media, fields='id, webViewLink').execute()
+        file_id = f.get('id')
+        
+        # [QUAN TRỌNG] Set quyền file là "Anyone with link" để xem được trên web
+        service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
+        
         return f.get('webViewLink')
-    except: return ""
+    except Exception as e: 
+        st.error(f"Lỗi upload: {e}")
+        return ""
 
 # --- 4. LOGIC HỆ THỐNG ---
 def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
+
 def send_telegram_msg(msg):
     if not TELEGRAM_TOKEN: return
     def run(): 
@@ -132,7 +163,7 @@ def add_job(n, p, a, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     code = generate_code(jid, now, n)
     type_msg = "(CHỈ ĐO ĐẠC)" if is_survey else ""
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
-    send_telegram_msg(f"🚀 <b>MỚI #{jid} {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}")
+    send_telegram_msg(f"🚀 <b>MỚI #{jid} {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}\n📎 {link}")
 
 def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid):
     sh = get_sheet(); cell = sh.find(str(jid))
@@ -256,7 +287,6 @@ else:
                         with st.expander(f"{icon} {code} | {j['current_stage']}"):
                             render_progress_bar(j['current_stage'], j['status'])
                             
-                            # --- TÁCH TAB ---
                             t1, t2, t3, t4 = st.tabs(["ℹ️ Thông tin & File", "⚙️ Xử lý Hồ sơ", "💰 Tài Chính", "📜 Nhật ký"])
                             
                             with t1:
@@ -265,15 +295,36 @@ else:
                                 c1, c2 = st.columns(2)
                                 c1.write(f"📞 **{j['customer_phone']}**"); c2.write(f"📍 {j['address']}")
                                 c1.write(f"⏰ Hạn: **{j['deadline']}**"); c2.write(f"Trạng thái: {j['status']}")
-                                st.markdown("---"); st.markdown("**📂 File đính kèm:**")
+                                st.markdown("---")
+                                st.markdown("**📂 File đính kèm:**")
+                                
+                                # --- XỬ LÝ HIỂN THỊ FILE NÂNG CAO ---
                                 all_links = extract_links(j['logs'])
                                 if j['file_link']: all_links.insert(0, j['file_link'])
                                 unique_links = list(set(all_links))
+                                
                                 if not unique_links: st.caption("Chưa có file.")
                                 else:
-                                    for link in unique_links:
-                                        c_f1, c_f2 = st.columns([3, 1])
-                                        c_f1.markdown(f"🔗 [Link]({link})"); c_f2.link_button("Xem", link)
+                                    for idx, link in enumerate(unique_links):
+                                        file_id = get_drive_id(link)
+                                        # Tạo link xem và tải
+                                        view_link = link
+                                        down_link = f"https://drive.google.com/uc?export=download&id={file_id}" if file_id else link
+                                        
+                                        with st.container(border=True):
+                                            c_icon, c_name, c_act = st.columns([1, 4, 3])
+                                            c_icon.markdown("📎")
+                                            c_name.write(f"File đính kèm {idx+1}")
+                                            
+                                            col_v, col_d = c_act.columns(2)
+                                            col_v.link_button("👁️ Xem", view_link)
+                                            col_d.link_button("⬇️ Tải về", down_link)
+                                            
+                                            # Nhúng Preview nếu có thể
+                                            if file_id:
+                                                preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
+                                                with st.expander("🔍 Xem nhanh (Preview)"):
+                                                    st.markdown(f'<iframe src="{preview_url}" width="100%" height="500" allow="autoplay"></iframe>', unsafe_allow_html=True)
                             
                             with t2:
                                 if j['status'] in ['Tạm dừng', 'Kết thúc sớm']:
@@ -281,7 +332,7 @@ else:
                                     if j['status'] == 'Tạm dừng' and st.button("▶️ Tiếp tục", key=f"r{j['id']}"): resume_job(j['id'], user); st.rerun()
                                 else:
                                     with st.form(f"f{j['id']}"):
-                                        nt = st.text_area("Ghi chú"); fl = st.file_uploader("Upload File")
+                                        nt = st.text_area("Ghi chú"); fl = st.file_uploader("Upload File (Kèm ảnh/Bản vẽ)")
                                         cur = j['current_stage']; nxt = "7. Hoàn thành" if safe_int(j.get('is_survey_only'))==1 and cur=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(cur)
                                         if nxt and nxt!="7. Hoàn thành":
                                             st.write(f"Chuyển sang: **{nxt}**"); asn = st.selectbox("Giao", get_active_users_list()); d = st.number_input("Hạn (Ngày)", value=2)
