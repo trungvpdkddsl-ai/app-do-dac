@@ -70,6 +70,58 @@ def get_users_sheet():
             return ws
     except: return None
 
+# --- CẬP NHẬT PHẦN CẤU HÌNH ---
+# Dán ID thư mục bạn vừa lấy ở Bước 2 vào đây
+DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy" 
+
+# --- HÀM UPLOAD ĐÃ SỬA LỖI ---
+def upload_to_drive(file_obj, folder_name):
+    if not file_obj: return ""
+    try:
+        creds = get_gcp_creds()
+        service = build('drive', 'v3', credentials=creds)
+        
+        # SỬA LỖI: Không để Service Account tự tạo folder gốc nữa
+        # Mà dùng luôn folder bạn đã share cho nó
+        pid = DRIVE_FOLDER_ID 
+            
+        # 1. Tìm hoặc tạo folder con (theo Job) bên trong folder gốc
+        q_sub = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{pid}' in parents"
+        res_sub = service.files().list(q=q_sub, fields="files(id)").execute()
+        
+        if res_sub.get('files'):
+            fid = res_sub['files'][0]['id']
+        else:
+            # Tạo folder con nằm trong folder gốc
+            file_metadata = {
+                'name': folder_name,
+                'mimeType': 'application/vnd.google-apps.folder',
+                'parents': [pid]
+            }
+            fid = service.files().create(body=file_metadata, fields='id').execute().get('id')
+            # Set quyền folder con công khai
+            try: service.permissions().create(fileId=fid, body={'type': 'anyone', 'role': 'reader'}).execute()
+            except: pass
+        
+        # 2. Upload File vào folder con
+        file_obj.seek(0)
+        media = MediaIoBaseUpload(file_obj, mimetype=file_obj.type)
+        file_metadata = {
+            'name': file_obj.name,
+            'parents': [fid]
+        }
+        
+        f = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+        file_id = f.get('id')
+        
+        # Set quyền file công khai để xem được trên web
+        try: service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
+        except: pass
+        
+        return f.get('webViewLink')
+    except Exception as e: 
+        st.error(f"Lỗi upload: {e}")
+
 # [CẬP NHẬT QUAN TRỌNG] Hàm upload có set quyền công khai
 def upload_to_drive(file_obj, folder_name):
     if not file_obj: return ""
@@ -412,3 +464,4 @@ else:
                     nr = c2.selectbox("Quyền", ROLES, index=idx, key=u['username'])
                     if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Lưu!"); st.rerun()
         else: st.error("Cấm truy cập!")
+
