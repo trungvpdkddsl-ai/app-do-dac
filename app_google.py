@@ -240,6 +240,16 @@ def terminate_job(jid, rs, u):
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
+# [MỚI] HÀM XÓA HỒ SƠ KHỎI DATABASE (CHO ADMIN)
+def delete_job_permanently(jid, u):
+    sh = get_sheet()
+    r = find_row_index(sh, jid)
+    if r:
+        # Lấy thông tin lần cuối để gửi log
+        c_name = sh.cell(r, 3).value
+        sh.delete_rows(r) # Xóa dòng trong Sheet
+        send_telegram_msg(f"🗑️ <b>ĐÃ XÓA HỒ SƠ</b>\nID: {jid}\nTên: {c_name}\n👤 Bởi Admin: {u}")
+
 # --- 4. UI COMPONENTS ---
 def render_progress_bar(current_stage, status):
     try: idx = STAGES_ORDER.index(current_stage)
@@ -287,10 +297,21 @@ def render_job_card(j, user, role):
                         col_v, col_d, col_x = c_act.columns(3)
                         col_v.link_button("👁️", link, help="Xem"); col_d.link_button("⬇️", down_link, help="Tải")
                         if role == "Quản lý":
-                            with col_x.popover("🗑️", help="Xóa"):
+                            with col_x.popover("🗑️", help="Xóa File"):
                                 st.write("Xóa file này?")
                                 if st.button("Xóa ngay", key=f"del_{j['id']}_{idx}_{int(time.time())}"):
                                     delete_file_system(j['id'], link, fname); st.toast("Đã xóa file!"); time.sleep(1); st.rerun()
+            
+            # [MỚI] KHU VỰC ADMIN XÓA HỒ SƠ
+            if role == "Quản lý":
+                st.divider()
+                with st.container():
+                    st.markdown("#### 🛡️ Khu vực Admin")
+                    with st.popover("🗑️ Xóa Hồ Sơ Này", use_container_width=True):
+                        st.error("Hành động này sẽ xóa vĩnh viễn hồ sơ khỏi hệ thống và không thể khôi phục!")
+                        if st.button("XÁC NHẬN XÓA", key=f"perm_del_{j['id']}", type="primary"):
+                            delete_job_permanently(j['id'], user)
+                            st.toast("Đã xóa hồ sơ thành công!"); time.sleep(1.5); st.rerun()
 
         with t2:
             if j['status'] in ['Tạm dừng', 'Kết thúc sớm']:
