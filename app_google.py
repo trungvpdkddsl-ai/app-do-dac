@@ -70,6 +70,49 @@ def get_users_sheet():
             return ws
     except: return None
 
+import base64
+import requests # Đảm bảo đã import requests ở đầu file
+
+# --- CẤU HÌNH UPLOAD MỚI (Điền thông tin của bạn vào đây) ---
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzm3cPDGpn3DVxySrXS76rtlywrfGAkiKCMNlVA4BVPbFnoMlePifmRFiZAw15wv1qo/exec"
+DRIVE_FOLDER_ID = "1NTBvu9gF1UTyvRWVyufj0JDz2XzYpwbY"
+
+# --- HÀM UPLOAD QUA APPS SCRIPT (KHÔNG LO LỖI QUOTA) ---
+def upload_to_drive(file_obj, folder_name_unused): 
+    # folder_name_unused: Apps Script lưu chung 1 folder cho dễ quản lý
+    if not file_obj: return ""
+    try:
+        # 1. Đọc file và chuyển sang base64
+        file_content = file_obj.read()
+        file_base64 = base64.b64encode(file_content).decode('utf-8')
+        
+        # 2. Chuẩn bị dữ liệu gửi đi
+        payload = {
+            "filename": f"{int(time.time())}_{file_obj.name}",
+            "mime_type": file_obj.type,
+            "file_base64": file_base64,
+            "folder_id": DRIVE_FOLDER_ID
+        }
+        
+        # 3. Gửi sang Google Apps Script
+        response = requests.post(APPS_SCRIPT_URL, json=payload)
+        
+        # 4. Nhận kết quả
+        if response.status_code == 200:
+            res_json = response.json()
+            if res_json.get("status") == "success":
+                return res_json.get("link")
+            else:
+                st.error(f"Lỗi Script: {res_json.get('message')}")
+                return ""
+        else:
+            st.error(f"Lỗi kết nối: {response.text}")
+            return ""
+            
+    except Exception as e:
+        st.error(f"Lỗi Python Upload: {e}")
+        return ""
+
 # --- CẬP NHẬT PHẦN CẤU HÌNH ---
 # Dán ID thư mục bạn vừa lấy ở Bước 2 vào đây
 DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy" 
@@ -464,4 +507,5 @@ else:
                     nr = c2.selectbox("Quyền", ROLES, index=idx, key=u['username'])
                     if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Lưu!"); st.rerun()
         else: st.error("Cấm truy cập!")
+
 
