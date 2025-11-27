@@ -58,6 +58,50 @@ def extract_files_from_log(log_text):
         return [("File cũ", l) for l in raw_links]
     return matches
 
+# [MỚI] Hàm tạo nút liên hệ Zalo/Gọi
+def render_contact_buttons(phone):
+    if not phone: return ""
+    # Xóa các ký tự đặc biệt để lấy số thuần
+    clean_phone = str(phone).replace("'", "").replace(" ", "").replace(".", "").replace("-", "")
+    
+    zalo_link = f"https://zalo.me/{clean_phone}"
+    call_link = f"tel:{clean_phone}"
+    
+    # CSS tạo nút đẹp
+    html = f"""
+    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+        <a href="{zalo_link}" target="_blank" style="text-decoration: none;">
+            <div style="
+                background-color: #0068FF; 
+                color: white; 
+                padding: 6px 12px; 
+                border-radius: 6px; 
+                font-weight: bold; 
+                font-size: 14px; 
+                display: flex; 
+                align-items: center; 
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                💬 Chat Zalo
+            </div>
+        </a>
+        <a href="{call_link}" style="text-decoration: none;">
+            <div style="
+                background-color: #28a745; 
+                color: white; 
+                padding: 6px 12px; 
+                border-radius: 6px; 
+                font-weight: bold; 
+                font-size: 14px; 
+                display: flex; 
+                align-items: center; 
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                📞 Gọi Điện
+            </div>
+        </a>
+    </div>
+    """
+    return html
+
 def get_drive_id(link):
     try: match = re.search(r'/d/([a-zA-Z0-9_-]+)', link); return match.group(1) if match else None
     except: return None
@@ -78,7 +122,6 @@ def get_users_sheet():
             ws.append_row(["username", "password", "fullname", "role"]); return ws
     except: return None
 
-# [MỚI] Hàm lấy sheet Audit Log (Tự tạo nếu chưa có)
 def get_audit_sheet():
     try:
         creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC")
@@ -88,7 +131,6 @@ def get_audit_sheet():
             ws.append_row(["Timestamp", "User", "Action", "Details"]); return ws
     except: return None
 
-# [MỚI] Hàm ghi nhật ký hệ thống
 def log_to_audit(user, action, details):
     def _log():
         try:
@@ -195,10 +237,8 @@ def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
 
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
     log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{log_file_str}"
-    
     asn_clean = asn.split(" - ")[0] if asn else ""
     sv_flag = 1 if is_survey else 0; dep_flag = 1 if deposit_ok else 0
-    
     sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
     
@@ -303,15 +343,13 @@ def terminate_job(jid, rs, u):
         log_to_audit(u, "TERMINATE_JOB", f"ID: {jid}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
-# [MỚI] Chuyển vào thùng rác (Soft Delete)
 def move_to_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.update_cell(r, 7, "Đã xóa") # Cột 7 là status
+        sh.update_cell(r, 7, "Đã xóa")
         log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}")
         st.toast("Đã chuyển vào thùng rác!")
 
-# [MỚI] Khôi phục từ thùng rác
 def restore_from_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
@@ -319,7 +357,6 @@ def restore_from_trash(jid, u):
         log_to_audit(u, "RESTORE_JOB", f"ID: {jid}")
         st.toast("Đã khôi phục hồ sơ!")
 
-# [MỚI] Xóa vĩnh viễn
 def delete_forever(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
@@ -364,7 +401,11 @@ def render_job_card(j, user, role):
             st.subheader(f"👤 {j['customer_name']}")
             if safe_int(j.get('is_survey_only')) == 1: st.warning("🛠️ CHỈ ĐO ĐẠC")
             if proc_name: st.info(f"Thủ tục: {proc_name}")
-            c1, c2 = st.columns(2); c1.write(f"📞 **{j['customer_phone']}**"); c2.write(f"📍 {j['address']}")
+            
+            # [HIỂN THỊ NÚT ZALO/GỌI]
+            st.markdown(render_contact_buttons(j['customer_phone']), unsafe_allow_html=True)
+            
+            c1, c2 = st.columns(2); c1.caption(f"📞 SĐT Gốc: {j['customer_phone']}"); c2.write(f"📍 {j['address']}")
             st.markdown("---"); st.markdown("**📂 File đính kèm:**")
             file_list = extract_files_from_log(j['logs'])
             if j['file_link'] and j['file_link'] not in [lnk for _, lnk in file_list]: file_list.insert(0, ("File gốc", j['file_link']))
@@ -386,9 +427,8 @@ def render_job_card(j, user, role):
             if role == "Quản lý":
                 st.divider()
                 with st.container():
-                    # [MỚI] Nút xóa chuyển thành Soft Delete
                     with st.popover("🗑️ Xóa Hồ Sơ (Vào thùng rác)", use_container_width=True):
-                        st.warning("Hồ sơ sẽ được chuyển vào Thùng Rác. Bạn có thể khôi phục sau.")
+                        st.warning("Hồ sơ sẽ được chuyển vào Thùng Rác.")
                         if st.button("XÁC NHẬN XÓA", key=f"soft_del_{j['id']}", type="primary"):
                             move_to_trash(j['id'], user); time.sleep(1); st.rerun()
 
@@ -470,7 +510,6 @@ else:
     st.sidebar.title(f"👤 {user}"); st.sidebar.info(f"{role}")
     if st.sidebar.button("Đăng xuất"): st.session_state['logged_in']=False; st.rerun()
     
-    # [MỚI] Menu Admin có thêm Thùng Rác và Nhật Ký
     menu = ["🏠 Việc Của Tôi", "🔍 Tra Cứu", "📝 Tạo Hồ Sơ", "📊 Báo Cáo"]
     if role == "Quản lý": menu.extend(["💰 Công Nợ", "👥 Nhân Sự", "🗑️ Thùng Rác", "🛡️ Nhật Ký"])
     sel = st.sidebar.radio("Menu", menu)
@@ -480,9 +519,7 @@ else:
         df = get_all_jobs_df()
         if df.empty: st.info("Trống!")
         else:
-            # [MỚI] Lọc bỏ hồ sơ đã xóa
             active_df = df[df['status'] != 'Đã xóa']
-            
             if role != "Quản lý": my_df = active_df[(active_df['assigned_to'].astype(str) == user) & (~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))]
             else: my_df = active_df[~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
             
@@ -534,10 +571,7 @@ else:
                 today = date.today(); first_day = today.replace(day=1)
                 date_range = st.date_input("📅 Khoảng thời gian", (first_day, today), format="DD/MM/YYYY")
         df = get_all_jobs_df()
-        
-        # [MỚI] Lọc hồ sơ đã xóa trong tra cứu
         active_df = df[df['status'] != 'Đã xóa']
-        
         if not active_df.empty and 'start_dt' in active_df.columns:
             if isinstance(date_range, tuple) and len(date_range) == 2:
                 start_d, end_d = date_range; mask_date = (active_df['start_dt'] >= start_d) & (active_df['start_dt'] <= end_d)
@@ -612,15 +646,12 @@ else:
                         else: st.info("Admin")
         else: st.error("Cấm truy cập!")
 
-    # [MỚI] GIAO DIỆN THÙNG RÁC
     elif sel == "🗑️ Thùng Rác":
         if role == "Quản lý":
             st.title("🗑️ Thùng Rác (Hồ sơ đã xóa)")
             df = get_all_jobs_df()
             trash_df = df[df['status'] == 'Đã xóa']
-            
-            if trash_df.empty:
-                st.success("Thùng rác trống!")
+            if trash_df.empty: st.success("Thùng rác trống!")
             else:
                 for i, j in trash_df.iterrows():
                     proc_name = extract_proc_from_log(j['logs'])
@@ -634,7 +665,6 @@ else:
                             delete_forever(j['id'], user); time.sleep(1); st.rerun()
         else: st.error("Cấm truy cập!")
 
-    # [MỚI] GIAO DIỆN NHẬT KÝ
     elif sel == "🛡️ Nhật Ký":
         if role == "Quản lý":
             st.title("🛡️ Nhật Ký Hệ Thống (Audit Logs)")
