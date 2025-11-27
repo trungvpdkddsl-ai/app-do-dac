@@ -27,15 +27,15 @@ WORKFLOW_DEFAULT = {
     "4. Ký hồ sơ": "5. Lấy hồ sơ", "5. Lấy hồ sơ": "6. Nộp hồ sơ", "6. Nộp hồ sơ": "7. Hoàn thành", "7. Hoàn thành": None
 }
 
-# [MỚI] CẤU HÌNH THỜI GIAN GIỚI HẠN CHO TỪNG BƯỚC (SLA - Đơn vị: Giờ)
-# Nếu hồ sơ nằm ở bước này quá số giờ quy định sẽ bị báo động đỏ
+# [CẤU HÌNH THỜI GIAN GIỚI HẠN - SLA] (Đơn vị: Giờ)
+# Mẹo: Để số 0 để test cảnh báo ngay lập tức
 STAGE_SLA_HOURS = {
-    "1. Tạo mới": 24,      # Phải đi đo trong vòng 24h
-    "2. Đo đạc": 48,       # Đo xong phải xử lý trong 48h
-    "3. Làm hồ sơ": 24,    # Làm xong phải trình ký trong 24h
-    "4. Ký hồ sơ": 72,     # Ký tá thường lâu hơn (3 ngày)
-    "5. Lấy hồ sơ": 24,    # Ký xong phải đi lấy ngay
-    "6. Nộp hồ sơ": 360,   # Nộp nhà nước (15 ngày - 360h)
+    "1. Tạo mới": 24,      
+    "2. Đo đạc": 48,       
+    "3. Làm hồ sơ": 24,    
+    "4. Ký hồ sơ": 72,     
+    "5. Lấy hồ sơ": 24,    
+    "6. Nộp hồ sơ": 360,   
 }
 
 # --- 2. HÀM HỖ TRỢ & KẾT NỐI ---
@@ -50,28 +50,27 @@ def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
     return match.group(1) if match else ""
 
-# [MỚI] HÀM KIỂM TRA ĐIỂM NGHẼN (BOTTLENECK CHECK)
+# [CẬP NHẬT] HÀM KIỂM TRA & TRẢ VỀ THÔNG TIN THỜI GIAN
 def check_bottleneck(logs, current_stage):
     if current_stage == "7. Hoàn thành" or not logs: return False, 0, 0
     
-    # Lấy dòng log cuối cùng để xem thời gian cập nhật gần nhất
     try:
-        lines = str(logs).strip().split('\n')
-        last_line = lines[-1]
-        # Tìm timestamp dạng [YYYY-MM-DD HH:MM:SS]
-        match = re.search(r'\[(.*?)\]', last_line)
-        if match:
-            last_time_str = match.group(1)
+        # Lấy dòng log cuối cùng để xem thời gian cập nhật gần nhất
+        # Tìm timestamp dạng [YYYY-MM-DD HH:MM:SS] ở cuối chuỗi log
+        matches = re.findall(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', str(logs))
+        if matches:
+            last_time_str = matches[-1] # Lấy mốc thời gian cuối cùng
             last_dt = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
             
             # Tính khoảng thời gian đã trôi qua (giờ)
-            hours_passed = (datetime.now() - last_dt).total_seconds() / 3600
+            diff = datetime.now() - last_dt
+            hours_passed = int(diff.total_seconds() / 3600)
             
-            # Lấy giới hạn cho bước hiện tại
-            limit = STAGE_SLA_HOURS.get(current_stage, 9999) # Mặc định 9999h nếu không quy định
+            # Lấy giới hạn
+            limit = STAGE_SLA_HOURS.get(current_stage, 9999) 
             
-            if hours_passed > limit:
-                return True, int(hours_passed), limit
+            is_stuck = hours_passed >= limit
+            return is_stuck, hours_passed, limit
     except: pass
     return False, 0, 0
 
@@ -164,7 +163,8 @@ def upload_to_drive(file_obj, sub_folder_name):
         response = requests.post(APPS_SCRIPT_URL, json=payload)
         if response.status_code == 200:
             res_json = response.json()
-            if res_json.get("status") == "success": return res_json.get("link"), file_obj.name
+            if res_json.get("status") == "success":
+                return res_json.get("link"), file_obj.name
     except: pass
     return None, None
 
@@ -191,7 +191,8 @@ def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
 def send_telegram_msg(msg):
     if not TELEGRAM_TOKEN: return
     def run(): 
-        try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"})
+        try: 
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"})
         except Exception as e: print(f"Tele Error: {e}")
     threading.Thread(target=run).start()
 
@@ -244,7 +245,9 @@ def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     if f: 
         for uploaded_file in f:
             l, n_f = upload_to_drive(uploaded_file, full_name_str)
-            if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
+            if l:
+                log_file_str += f" | File: {n_f} - {l}"
+                if link == "": link = l; fname = n_f
 
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
     log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{log_file_str}"
@@ -358,19 +361,24 @@ def terminate_job(jid, rs, u):
 def move_to_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.update_cell(r, 7, "Đã xóa"); log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}"); st.toast("Đã chuyển vào thùng rác!")
+        sh.update_cell(r, 7, "Đã xóa")
+        log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}")
+        st.toast("Đã chuyển vào thùng rác!")
 
 def restore_from_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.update_cell(r, 7, "Đang xử lý"); log_to_audit(u, "RESTORE_JOB", f"ID: {jid}"); st.toast("Đã khôi phục hồ sơ!")
+        sh.update_cell(r, 7, "Đang xử lý")
+        log_to_audit(u, "RESTORE_JOB", f"ID: {jid}")
+        st.toast("Đã khôi phục hồ sơ!")
 
 def delete_forever(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.delete_rows(r); log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}"); st.toast("Đã xóa vĩnh viễn!")
+        sh.delete_rows(r)
+        log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}")
+        st.toast("Đã xóa vĩnh viễn!")
 
-# [MỚI] HÀM QUÉT ĐIỂM NGHẼN CHO ADMIN
 def scan_bottlenecks(df):
     bottlenecks = []
     for _, j in df.iterrows():
@@ -407,19 +415,27 @@ def render_job_card(j, user, role):
     dl_status = "HÔM NAY" if dl_dt.date() == now.date() else f"Còn {(dl_dt - now).days} ngày"
     if dl_dt < now: dl_status = "QUÁ HẠN"
     
-    # [MỚI] KIỂM TRA ĐIỂM NGHẼN ĐỂ HIỆN CẢNH BÁO
+    # [HIỂN THỊ CẢNH BÁO ĐIỂM NGHẼN TRÊN UI]
     is_stuck, hours, limit = check_bottleneck(j['logs'], j['current_stage'])
-    stuck_warning = ""
+    
+    stuck_alert = ""
+    # Nếu bị kẹt thì hiện cảnh báo đỏ
     if is_stuck and j['status'] == "Đang xử lý":
-        stuck_warning = f" | ⚠️ **CẢNH BÁO: Kẹt {hours}h (Max {limit}h)**"
+        stuck_alert = f" | ⚠️ KẸT {hours}H"
     
     icon = "⛔" if j['status']=='Tạm dừng' else "⏹️" if j['status']=='Kết thúc sớm' else ("🔴" if dl_dt < now else "🟡" if dl_dt <= now+timedelta(days=1) else "🟢")
     
-    with st.expander(f"{icon} {code_display} | {j['current_stage']}{stuck_warning}"):
-        if is_stuck and j['status'] == "Đang xử lý":
-            st.error(f"⚠️ Hồ sơ này đã ở bước '{j['current_stage']}' quá {limit} giờ! Vui lòng xử lý gấp.")
-            
-        st.info(f"📅 **Hạn hoàn thành (Ngày trả kết quả): {dl_str}** | Trạng thái: **{dl_status}**")
+    with st.expander(f"{icon} {code_display} | {j['current_stage']}{stuck_alert}"):
+        
+        # [MỚI] HIỂN THỊ THỜI GIAN XỬ LÝ
+        if j['status'] == "Đang xử lý":
+            if is_stuck:
+                st.error(f"⚠️ **CẢNH BÁO CHẬM:** Hồ sơ đã nằm ở bước '{j['current_stage']}' được **{hours} giờ**. (Quy định tối đa: {limit} giờ)")
+            else:
+                # Nếu chưa kẹt, hiện thời gian xanh
+                st.info(f"⏱️ Thời gian xử lý bước này: **{hours} giờ** / Định mức: {limit} giờ")
+
+        st.write(f"📅 **Hạn hoàn thành (Ngày trả kết quả): {dl_str}** | Trạng thái: **{dl_status}**")
         render_progress_bar(j['current_stage'], j['status'])
         t1, t2, t3, t4 = st.tabs(["ℹ️ Thông tin & File", "⚙️ Xử lý Hồ sơ", "💰 Tài Chính", "📜 Nhật ký"])
         
