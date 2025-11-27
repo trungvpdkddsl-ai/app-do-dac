@@ -39,6 +39,17 @@ def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
     return match.group(1) if match else ""
 
+# [MỚI] THUẬT TOÁN TÍNH NGÀY (BỎ QUA T7, CN)
+def calculate_deadline(start_date, days_to_add):
+    current_date = start_date
+    added_days = 0
+    while added_days < days_to_add:
+        current_date += timedelta(days=1)
+        # weekday(): 0=Thứ 2, ..., 5=Thứ 7, 6=Chủ Nhật
+        if current_date.weekday() < 5: # Chỉ tính nếu là Thứ 2 - Thứ 6
+            added_days += 1
+    return current_date
+
 def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
     try:
         jid_str = str(jid); seq = jid_str[-2:] 
@@ -58,45 +69,18 @@ def extract_files_from_log(log_text):
         return [("File cũ", l) for l in raw_links]
     return matches
 
-# [MỚI] Hàm tạo nút liên hệ Zalo/Gọi
 def render_contact_buttons(phone):
     if not phone: return ""
-    # Xóa các ký tự đặc biệt để lấy số thuần
     clean_phone = str(phone).replace("'", "").replace(" ", "").replace(".", "").replace("-", "")
-    
     zalo_link = f"https://zalo.me/{clean_phone}"
     call_link = f"tel:{clean_phone}"
-    
-    # CSS tạo nút đẹp
     html = f"""
     <div style="display: flex; gap: 10px; margin-bottom: 10px;">
         <a href="{zalo_link}" target="_blank" style="text-decoration: none;">
-            <div style="
-                background-color: #0068FF; 
-                color: white; 
-                padding: 6px 12px; 
-                border-radius: 6px; 
-                font-weight: bold; 
-                font-size: 14px; 
-                display: flex; 
-                align-items: center; 
-                box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
-                💬 Chat Zalo
-            </div>
+            <div style="background-color: #0068FF; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px; display: flex; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">💬 Chat Zalo</div>
         </a>
         <a href="{call_link}" style="text-decoration: none;">
-            <div style="
-                background-color: #28a745; 
-                color: white; 
-                padding: 6px 12px; 
-                border-radius: 6px; 
-                font-weight: bold; 
-                font-size: 14px; 
-                display: flex; 
-                align-items: center; 
-                box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
-                📞 Gọi Điện
-            </div>
+            <div style="background-color: #28a745; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px; display: flex; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">📞 Gọi Điện</div>
         </a>
     </div>
     """
@@ -167,7 +151,8 @@ def delete_file_system(job_id, file_link, file_name, user):
     sh = get_sheet(); r = find_row_index(sh, job_id)
     if r:
         current_log = sh.cell(r, 11).value
-        new_log = current_log.replace(f" | File: {file_name} - {file_link}", "").replace(f" | File: {file_link}", "")
+        pattern = r"(\s*\|\s*)?File: .*? - " + re.escape(file_link)
+        new_log = re.sub(pattern, "", str(current_log))
         sh.update_cell(r, 11, new_log)
         if sh.cell(r, 10).value == file_link: sh.update_cell(r, 10, "")
         log_to_audit(user, "DELETE_FILE", f"Job {job_id}: Deleted file {file_name}")
@@ -219,10 +204,15 @@ def get_daily_sequence_id():
     else: max_seq = max([int(jid[-2:]) for jid in today_ids]); seq = max_seq + 1
     return int(f"{prefix}{seq:02}"), f"{seq:02}"
 
-# --- 3. LOGIC NGHIỆP VỤ ---
+# --- 3. LOGIC NGHIỆP VỤ (ĐÃ ÁP DỤNG THUẬT TOÁN TÍNH NGÀY) ---
 def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     sh = get_sheet(); now = datetime.now(); now_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    date_code = now.strftime('%d%m%Y'); dl = (now+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
+    date_code = now.strftime('%d%m%Y')
+    
+    # [CẬP NHẬT] Tính deadline bỏ qua T7, CN
+    deadline_dt = calculate_deadline(now, d)
+    dl = deadline_dt.strftime("%Y-%m-%d %H:%M:%S")
+    
     jid, seq_str = get_daily_sequence_id()
     phone_db = f"'{p}" 
     full_name_str = generate_unique_name(jid, now_str, n, p, a, proc)
@@ -237,6 +227,7 @@ def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
 
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
     log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{log_file_str}"
+    
     asn_clean = asn.split(" - ")[0] if asn else ""
     sv_flag = 1 if is_survey else 0; dep_flag = 1 if deposit_ok else 0
     sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
@@ -273,7 +264,9 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
                 new_deadline = result_date.strftime("%Y-%m-%d %H:%M:%S")
                 sh.update_cell(r, 9, new_deadline); nt += f" (Hẹn trả: {result_date.strftime('%d/%m/%Y')})"
             else:
-                sh.update_cell(r, 9, (datetime.now()+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S"))
+                # [CẬP NHẬT] Tính deadline bỏ qua T7, CN
+                new_dl = calculate_deadline(datetime.now(), d)
+                sh.update_cell(r, 9, new_dl.strftime("%Y-%m-%d %H:%M:%S"))
             
             sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
             olog = sh.cell(r, 11).value
@@ -401,10 +394,7 @@ def render_job_card(j, user, role):
             st.subheader(f"👤 {j['customer_name']}")
             if safe_int(j.get('is_survey_only')) == 1: st.warning("🛠️ CHỈ ĐO ĐẠC")
             if proc_name: st.info(f"Thủ tục: {proc_name}")
-            
-            # [HIỂN THỊ NÚT ZALO/GỌI]
             st.markdown(render_contact_buttons(j['customer_phone']), unsafe_allow_html=True)
-            
             c1, c2 = st.columns(2); c1.caption(f"📞 SĐT Gốc: {j['customer_phone']}"); c2.write(f"📍 {j['address']}")
             st.markdown("---"); st.markdown("**📂 File đính kèm:**")
             file_list = extract_files_from_log(j['logs'])
@@ -422,7 +412,7 @@ def render_job_card(j, user, role):
                         if role == "Quản lý":
                             with col_x.popover("🗑️", help="Xóa File"):
                                 st.write("Xóa file này?")
-                                if st.button("Xóa ngay", key=f"del_{j['id']}_{idx}_{int(time.time())}"):
+                                if st.button("Xóa ngay", key=f"del_{j['id']}_{idx}"):
                                     delete_file_system(j['id'], link, fname, user); st.toast("Đã xóa file!"); time.sleep(1); st.rerun()
             if role == "Quản lý":
                 st.divider()
@@ -491,6 +481,7 @@ def render_job_card(j, user, role):
 st.set_page_config(page_title="Đo Đạc Cloud Pro", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
+if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
 
 if not st.session_state['logged_in']:
     st.title("🔐 Đăng nhập"); c1, c2 = st.columns(2)
@@ -515,22 +506,47 @@ else:
     sel = st.sidebar.radio("Menu", menu)
 
     if sel == "🏠 Việc Của Tôi":
-        st.title("📋 Tiến trình hồ sơ")
+        c_note, c_title = st.columns([1, 2])
         df = get_all_jobs_df()
-        if df.empty: st.info("Trống!")
+        if df.empty: 
+            with c_title: st.title("📋 Tiến trình hồ sơ")
+            st.info("Trống!")
         else:
             active_df = df[df['status'] != 'Đã xóa']
             if role != "Quản lý": my_df = active_df[(active_df['assigned_to'].astype(str) == user) & (~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))]
             else: my_df = active_df[~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
             
+            now = datetime.now()
+            my_df['dl_dt'] = pd.to_datetime(my_df['deadline'], errors='coerce')
+            my_df['dl_dt'] = my_df['dl_dt'].fillna(now + timedelta(days=365))
+            warning_window = now + timedelta(hours=48)
+            warning_jobs = my_df[(my_df['dl_dt'] > now) & (my_df['dl_dt'] <= warning_window)]
+            
+            with c_note:
+                if not warning_jobs.empty:
+                    st.warning(f"🔔 **LƯU Ý: Có {len(warning_jobs)} hồ sơ hết hạn trong 48h tới!**")
+                    with st.expander("Xem chi tiết"):
+                        for _, wj in warning_jobs.iterrows():
+                            st.write(f"• {wj['customer_name']} (Hạn: {wj['dl_dt'].strftime('%d/%m %H:%M')})")
+            
+            with c_title: st.title("📋 Tiến trình hồ sơ")
+
             if my_df.empty: st.info("Hết việc!")
             else:
-                now = datetime.now(); my_df['dl_dt'] = pd.to_datetime(my_df['deadline'], errors='coerce')
-                my_df['dl_dt'] = my_df['dl_dt'].fillna(now + timedelta(days=365))
-                over = my_df[my_df['dl_dt'] < now]; soon = my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(days=1))]
+                over = my_df[my_df['dl_dt'] < now]
+                soon = my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(days=1))] 
                 k1, k2, k3 = st.columns(3)
-                k1.metric("🔴 Quá Hạn", len(over), border=True); k2.metric("🟡 Gấp", len(soon), border=True); k3.metric("🟢 Tổng", len(my_df), border=True); st.divider()
-                for i, j in my_df.iterrows(): render_job_card(j, user, role)
+                if k1.button(f"🔴 Quá Hạn ({len(over)})", use_container_width=True): st.session_state['job_filter'] = 'overdue'
+                if k2.button(f"🟡 Gấp ({len(soon)})", use_container_width=True): st.session_state['job_filter'] = 'urgent'
+                if k3.button(f"🟢 Tổng ({len(my_df)})", use_container_width=True): st.session_state['job_filter'] = 'all'
+                
+                if st.session_state['job_filter'] == 'overdue': display_df = over
+                elif st.session_state['job_filter'] == 'urgent': display_df = soon
+                else: display_df = my_df
+                
+                st.divider()
+                st.caption(f"Đang hiển thị: {st.session_state['job_filter'].upper()} ({len(display_df)} hồ sơ)")
+                for i, j in display_df.iterrows(): render_job_card(j, user, role)
 
     elif sel == "📝 Tạo Hồ Sơ":
         st.title("Tạo Hồ Sơ")
