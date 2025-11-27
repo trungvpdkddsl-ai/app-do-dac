@@ -7,38 +7,25 @@ import threading
 import hashlib
 import re
 import gspread
-import base64 # Thư viện để xử lý file upload qua Script
+import base64 
 from google.oauth2.service_account import Credentials
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-
-# 1.1 Cấu hình Telegram (Giữ nguyên của bạn)
 TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
 TELEGRAM_CHAT_ID = "-5046493421"
-
-# 1.2 Cấu hình Google Sheets (Vẫn dùng Service Account để ghi dữ liệu)
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
-# 1.3 Cấu hình Upload File (PHẦN QUAN TRỌNG NHẤT - CẦN ĐIỀN VÀO)
 # ==============================================================================
-# HÃY DÁN LINK WEB APP BẠN LẤY TỪ bƯỚC TRIỂN KHAI APPS SCRIPT VÀO DƯỚI ĐÂY:
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzm3cPDGpn3DVxySrXS76rtlywrfGAkiKCMNlVA4BVPbFnoMlePifmRFiZAw15wv1qo/exec"
-
-# HÃY DÁN ID THƯ MỤC GOOGLE DRIVE CỦA BẠN VÀO DƯỚI ĐÂY:
+# ĐIỀN THÔNG TIN CỦA BẠN VÀO ĐÂY (GIỮ NGUYÊN NHƯ CŨ)
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbx9M3UmYXgYTUMVnqFjFsVCD8OcIT5wugM4XcwzLi-u-x-EuqfOrEHEeDUaLLHiQTaJ/exec"
 DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy" 
 # ==============================================================================
 
-# 1.4 Cấu hình Quy trình
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
 STAGES_ORDER = ["1. Tạo mới", "2. Đo đạc", "3. Làm hồ sơ", "4. Ký hồ sơ", "5. Lấy hồ sơ", "6. Nộp hồ sơ", "7. Hoàn thành"]
 WORKFLOW_DEFAULT = {
-    "1. Tạo mới": "2. Đo đạc", 
-    "2. Đo đạc": "3. Làm hồ sơ", 
-    "3. Làm hồ sơ": "4. Ký hồ sơ", 
-    "4. Ký hồ sơ": "5. Lấy hồ sơ", 
-    "5. Lấy hồ sơ": "6. Nộp hồ sơ", 
-    "6. Nộp hồ sơ": "7. Hoàn thành", 
-    "7. Hoàn thành": None
+    "1. Tạo mới": "2. Đo đạc", "2. Đo đạc": "3. Làm hồ sơ", "3. Làm hồ sơ": "4. Ký hồ sơ", 
+    "4. Ký hồ sơ": "5. Lấy hồ sơ", "5. Lấy hồ sơ": "6. Nộp hồ sơ", "6. Nộp hồ sơ": "7. Hoàn thành", "7. Hoàn thành": None
 }
 
 # --- 2. HÀM HỖ TRỢ ---
@@ -53,8 +40,17 @@ def generate_code(jid, start, name):
     except: d = datetime.now().strftime('%d%m%y')
     return f"{d}-{int(jid)} {name}"
 
-def extract_links(log_text):
-    return re.findall(r'(https?://[^\s]+)', str(log_text))
+# Hàm trích xuất file thông minh: Lấy cả Tên và Link
+def extract_files_from_log(log_text):
+    # Tìm mẫu: "File: TênFile.ext - https://..."
+    pattern = r"File: (.*?) - (https?://[^\s]+)"
+    matches = re.findall(pattern, str(log_text))
+    
+    # Nếu không tìm thấy theo mẫu mới, tìm link trần (cho file cũ)
+    if not matches:
+        raw_links = re.findall(r'(https?://[^\s]+)', str(log_text))
+        return [("File cũ (Không tên)", l) for l in raw_links]
+    return matches
 
 def get_drive_id(link):
     try:
@@ -62,9 +58,8 @@ def get_drive_id(link):
         return match.group(1) if match else None
     except: return None
 
-# --- 3. KẾT NỐI DATABASE (GOOGLE SHEETS) ---
+# --- 3. KẾT NỐI DATABASE ---
 def get_gcp_creds(): 
-    # Vẫn cần secrets cho Google Sheets
     return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
 
 def get_sheet(sheet_name="DB_DODAC"):
@@ -83,56 +78,43 @@ def get_users_sheet():
             return ws
     except: return None
 
-# --- 4. HÀM UPLOAD FILE (PHIÊN BẢN MỚI QUA APPS SCRIPT) ---
-def upload_to_drive(file_obj, folder_name_unused):
-    """
-    Hàm này gửi file sang Google Apps Script để upload.
-    Khắc phục hoàn toàn lỗi Quota Exceeded của Service Account.
-    """
-    if not file_obj: return ""
-    
-    # Hiển thị trạng thái
+# --- 4. UPLOAD FILE VÀO FOLDER CON ---
+def upload_to_drive(file_obj, sub_folder_name):
+    if not file_obj: return None, None
     status_box = st.empty()
-    status_box.info("☁️ Đang tải file lên đám mây...")
+    status_box.info(f"☁️ Đang tải '{file_obj.name}' vào thư mục '{sub_folder_name}'...")
     
     try:
-        # 1. Chuyển đổi file sang Base64
         file_content = file_obj.read()
         file_base64 = base64.b64encode(file_content).decode('utf-8')
         
-        # 2. Tạo gói dữ liệu
         payload = {
-            "filename": f"{int(time.time())}_{file_obj.name}",
+            "filename": file_obj.name, # Giữ nguyên tên gốc
             "mime_type": file_obj.type,
             "file_base64": file_base64,
-            "folder_id": DRIVE_FOLDER_ID  # Dùng ID folder cấu hình ở trên
+            "folder_id": DRIVE_FOLDER_ID,
+            "sub_folder_name": sub_folder_name # Gửi thêm tên folder con
         }
         
-        # 3. Gửi request POST sang Apps Script
-        if "script.google.com" not in APPS_SCRIPT_URL:
-             status_box.error("⚠️ Chưa cấu hình APPS_SCRIPT_URL trong code!")
-             return ""
-
         response = requests.post(APPS_SCRIPT_URL, json=payload)
         
-        # 4. Xử lý phản hồi
         if response.status_code == 200:
             res_json = response.json()
             if res_json.get("status") == "success":
                 status_box.success("✅ Upload thành công!")
                 time.sleep(1)
                 status_box.empty()
-                return res_json.get("link")
+                return res_json.get("link"), file_obj.name
             else:
-                status_box.error(f"❌ Lỗi từ Google Script: {res_json.get('message')}")
-                return ""
+                status_box.error(f"❌ Lỗi Script: {res_json.get('message')}")
+                return None, None
         else:
-            status_box.error(f"❌ Lỗi kết nối mạng: {response.text}")
-            return ""
+            status_box.error(f"❌ Lỗi mạng: {response.text}")
+            return None, None
             
     except Exception as e:
         status_box.error(f"❌ Lỗi Python: {e}")
-        return ""
+        return None, None
 
 # --- 5. LOGIC HỆ THỐNG ---
 def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
@@ -173,17 +155,20 @@ def get_all_jobs_df():
         if 'file_link' not in df.columns: df['file_link'] = ""
     return df
 
-# --- 6. XỬ LÝ HỒ SƠ (Dùng hàm upload mới) ---
+# --- 6. XỬ LÝ HỒ SƠ ---
 def add_job(n, p, a, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     sh = get_sheet(); now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     dl = (datetime.now()+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
     jid = int(time.time())
     
-    # Gọi hàm upload mới
-    link = upload_to_drive(f, f"{jid}_{n}")
+    # Tạo tên thư mục con: ID_TenKhachHang
+    sub_folder = f"{jid}_{n}"
+    link, fname = upload_to_drive(f, sub_folder)
     
     log = f"[{now}] {u}: Khởi tạo"
-    if link: log += f" | File: {link}"
+    # Lưu log kèm tên file để hiển thị lại sau này
+    if link: log += f" | File: {fname} - {link}"
+    
     asn_clean = asn.split(" - ")[0] if asn else ""
     sv_flag = 1 if is_survey else 0
     dep_flag = 1 if deposit_ok else 0
@@ -191,17 +176,18 @@ def add_job(n, p, a, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     code = generate_code(jid, now, n)
     type_msg = "(CHỈ ĐO ĐẠC)" if is_survey else ""
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
-    file_msg = f"\n📎 {link}" if link else ""
+    file_msg = f"\n📎 {fname}: {link}" if link else ""
     send_telegram_msg(f"🚀 <b>MỚI #{jid} {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}{file_msg}")
 
 def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid):
     sh = get_sheet(); cell = sh.find(str(jid))
     if cell:
-        r = cell.row; now = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); lnk = ""
+        r = cell.row; now = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); lnk = ""; fname = ""
         c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
         
-        # Gọi hàm upload mới
-        if f: lnk = upload_to_drive(f, f"{jid}_{c_name}")
+        # Upload vào folder cũ
+        sub_folder = f"{jid}_{c_name}"
+        if f: lnk, fname = upload_to_drive(f, sub_folder)
         
         nxt = "7. Hoàn thành" if is_survey==1 and stg=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(stg)
         if nxt:
@@ -209,8 +195,11 @@ def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, 
             if asn: sh.update_cell(r, 8, asn.split(" - ")[0])
             sh.update_cell(r, 9, (datetime.now()+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S"))
             sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
-            olog = sh.cell(r, 11).value; nlog = f"\n[{now}] {u}: {stg}->{nxt} | Note: {nt}"
-            if lnk: nlog += f" | File: {lnk}"
+            
+            olog = sh.cell(r, 11).value
+            nlog = f"\n[{now}] {u}: {stg}->{nxt} | Note: {nt}"
+            if lnk: nlog += f" | File: {fname} - {lnk}" # Lưu log đúng định dạng
+            
             sh.update_cell(r, 11, olog + nlog)
             if nxt=="7. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
             code = generate_code(jid, start_t, c_name)
@@ -249,7 +238,7 @@ def terminate_job(jid, rs, u):
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
-# --- 7. VISUAL (Giao diện) ---
+# --- 7. UI VISUAL ---
 def render_progress_bar(current_stage, status):
     try: idx = STAGES_ORDER.index(current_stage)
     except: idx = 0
@@ -264,13 +253,13 @@ def render_progress_bar(current_stage, status):
         h += f'<div class="step-item"><div class="step-circle {cls}">{ico}</div><div style="font-size:11px">{s.split(". ")[1]}</div></div>'
     st.markdown(h+'</div>', unsafe_allow_html=True)
 
-# --- 8. GIAO DIỆN CHÍNH ---
-st.set_page_config(page_title="Đo Đạc Cloud V16 - Fix Upload", page_icon="☁️", layout="wide")
+# --- 8. UI MAIN ---
+st.set_page_config(page_title="Đo Đạc Cloud Pro", page_icon="☁️", layout="wide")
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 
 if not st.session_state['logged_in']:
-    st.title("🔐 Đăng nhập (V16 Final)")
+    st.title("🔐 Đăng nhập")
     c1, c2 = st.columns(2)
     with c1:
         u = st.text_input("User"); p = st.text_input("Pass", type='password')
@@ -330,33 +319,29 @@ else:
                                 st.markdown("---")
                                 st.markdown("**📂 File đính kèm:**")
                                 
-                                # --- XỬ LÝ HIỂN THỊ FILE VÀ PREVIEW ---
-                                all_links = extract_links(j['logs'])
-                                if j['file_link']: all_links.insert(0, j['file_link'])
-                                unique_links = list(set(all_links))
+                                # --- PHẦN HIỂN THỊ FILE MỚI ---
+                                # Lấy danh sách file từ Log
+                                file_list = extract_files_from_log(j['logs'])
+                                # Nếu có file gốc lúc tạo mà không có trong log (case cũ)
+                                if j['file_link'] and j['file_link'] not in [lnk for _, lnk in file_list]:
+                                    file_list.insert(0, ("File gốc (Chưa có tên)", j['file_link']))
                                 
-                                if not unique_links: st.caption("Chưa có file.")
+                                if not file_list: st.caption("Chưa có file.")
                                 else:
-                                    for idx, link in enumerate(unique_links):
+                                    # Hiển thị dạng bảng đơn giản, bỏ preview
+                                    for idx, (fname, link) in enumerate(file_list):
                                         file_id = get_drive_id(link)
-                                        # Tạo link tải trực tiếp
-                                        view_link = link
                                         down_link = f"https://drive.google.com/uc?export=download&id={file_id}" if file_id else link
                                         
                                         with st.container(border=True):
-                                            c_icon, c_name, c_act = st.columns([1, 4, 3])
+                                            c_icon, c_name, c_act = st.columns([0.5, 4, 1.5])
                                             c_icon.markdown("📎")
-                                            c_name.write(f"File đính kèm {idx+1}")
+                                            # Hiển thị Tên file đậm
+                                            c_name.markdown(f"**{fname}**")
                                             
                                             col_v, col_d = c_act.columns(2)
-                                            col_v.link_button("👁️ Xem", view_link)
-                                            col_d.link_button("⬇️ Tải về", down_link)
-                                            
-                                            # Nhúng Preview nếu có ID
-                                            if file_id:
-                                                preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
-                                                with st.expander(f"🔍 Xem nhanh File {idx+1}"):
-                                                    st.markdown(f'<iframe src="{preview_url}" width="100%" height="500" allow="autoplay"></iframe>', unsafe_allow_html=True)
+                                            col_v.link_button("👁️", link, help="Xem Online")
+                                            col_d.link_button("⬇️", down_link, help="Tải về")
                             
                             with t2:
                                 if j['status'] in ['Tạm dừng', 'Kết thúc sớm']:
@@ -397,7 +382,7 @@ else:
                                 st.markdown("#### 📜 Nhật ký xử lý")
                                 raw_logs = str(j['logs']).split('\n')
                                 for log_line in raw_logs:
-                                    if log_line.strip(): st.text(re.sub(r'\| File: http\S+', '', log_line))
+                                    if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line)) # Ẩn phần file dài dòng trong log
 
         except Exception as e: st.error(f"Lỗi: {e}")
 
