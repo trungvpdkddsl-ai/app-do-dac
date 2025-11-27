@@ -7,16 +7,28 @@ import threading
 import hashlib
 import re
 import gspread
+import base64 # Thư viện để xử lý file upload qua Script
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 
-# --- 1. CẤU HÌNH ---
+# --- 1. CẤU HÌNH HỆ THỐNG ---
 
+# 1.1 Cấu hình Telegram (Giữ nguyên của bạn)
 TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
-TELEGRAM_CHAT_ID = "-5046493421" 
+TELEGRAM_CHAT_ID = "-5046493421"
 
+# 1.2 Cấu hình Google Sheets (Vẫn dùng Service Account để ghi dữ liệu)
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+
+# 1.3 Cấu hình Upload File (PHẦN QUAN TRỌNG NHẤT - CẦN ĐIỀN VÀO)
+# ==============================================================================
+# HÃY DÁN LINK WEB APP BẠN LẤY TỪ bƯỚC TRIỂN KHAI APPS SCRIPT VÀO DƯỚI ĐÂY:
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzm3cPDGpn3DVxySrXS76rtlywrfGAkiKCMNlVA4BVPbFnoMlePifmRFiZAw15wv1qo/exec"
+
+# HÃY DÁN ID THƯ MỤC GOOGLE DRIVE CỦA BẠN VÀO DƯỚI ĐÂY:
+DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy" 
+# ==============================================================================
+
+# 1.4 Cấu hình Quy trình
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
 STAGES_ORDER = ["1. Tạo mới", "2. Đo đạc", "3. Làm hồ sơ", "4. Ký hồ sơ", "5. Lấy hồ sơ", "6. Nộp hồ sơ", "7. Hoàn thành"]
 WORKFLOW_DEFAULT = {
@@ -44,15 +56,16 @@ def generate_code(jid, start, name):
 def extract_links(log_text):
     return re.findall(r'(https?://[^\s]+)', str(log_text))
 
-# [MỚI] Hàm lấy ID từ link Google Drive để tạo link tải trực tiếp
 def get_drive_id(link):
     try:
         match = re.search(r'/d/([a-zA-Z0-9_-]+)', link)
         return match.group(1) if match else None
     except: return None
 
-# --- 3. KẾT NỐI GOOGLE ---
-def get_gcp_creds(): return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
+# --- 3. KẾT NỐI DATABASE (GOOGLE SHEETS) ---
+def get_gcp_creds(): 
+    # Vẫn cần secrets cho Google Sheets
+    return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
 
 def get_sheet(sheet_name="DB_DODAC"):
     creds = get_gcp_creds(); client = gspread.authorize(creds)
@@ -70,141 +83,58 @@ def get_users_sheet():
             return ws
     except: return None
 
-import base64
-import requests # Đảm bảo đã import requests ở đầu file
-
-# --- CẤU HÌNH UPLOAD MỚI (Điền thông tin của bạn vào đây) ---
-APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzm3cPDGpn3DVxySrXS76rtlywrfGAkiKCMNlVA4BVPbFnoMlePifmRFiZAw15wv1qo/exec"
-DRIVE_FOLDER_ID = "1NTBvu9gF1UTyvRWVyufj0JDz2XzYpwbY"
-
-# --- HÀM UPLOAD QUA APPS SCRIPT (KHÔNG LO LỖI QUOTA) ---
-def upload_to_drive(file_obj, folder_name_unused): 
-    # folder_name_unused: Apps Script lưu chung 1 folder cho dễ quản lý
+# --- 4. HÀM UPLOAD FILE (PHIÊN BẢN MỚI QUA APPS SCRIPT) ---
+def upload_to_drive(file_obj, folder_name_unused):
+    """
+    Hàm này gửi file sang Google Apps Script để upload.
+    Khắc phục hoàn toàn lỗi Quota Exceeded của Service Account.
+    """
     if not file_obj: return ""
+    
+    # Hiển thị trạng thái
+    status_box = st.empty()
+    status_box.info("☁️ Đang tải file lên đám mây...")
+    
     try:
-        # 1. Đọc file và chuyển sang base64
+        # 1. Chuyển đổi file sang Base64
         file_content = file_obj.read()
         file_base64 = base64.b64encode(file_content).decode('utf-8')
         
-        # 2. Chuẩn bị dữ liệu gửi đi
+        # 2. Tạo gói dữ liệu
         payload = {
             "filename": f"{int(time.time())}_{file_obj.name}",
             "mime_type": file_obj.type,
             "file_base64": file_base64,
-            "folder_id": DRIVE_FOLDER_ID
+            "folder_id": DRIVE_FOLDER_ID  # Dùng ID folder cấu hình ở trên
         }
         
-        # 3. Gửi sang Google Apps Script
+        # 3. Gửi request POST sang Apps Script
+        if "script.google.com" not in APPS_SCRIPT_URL:
+             status_box.error("⚠️ Chưa cấu hình APPS_SCRIPT_URL trong code!")
+             return ""
+
         response = requests.post(APPS_SCRIPT_URL, json=payload)
         
-        # 4. Nhận kết quả
+        # 4. Xử lý phản hồi
         if response.status_code == 200:
             res_json = response.json()
             if res_json.get("status") == "success":
+                status_box.success("✅ Upload thành công!")
+                time.sleep(1)
+                status_box.empty()
                 return res_json.get("link")
             else:
-                st.error(f"Lỗi Script: {res_json.get('message')}")
+                status_box.error(f"❌ Lỗi từ Google Script: {res_json.get('message')}")
                 return ""
         else:
-            st.error(f"Lỗi kết nối: {response.text}")
+            status_box.error(f"❌ Lỗi kết nối mạng: {response.text}")
             return ""
             
     except Exception as e:
-        st.error(f"Lỗi Python Upload: {e}")
+        status_box.error(f"❌ Lỗi Python: {e}")
         return ""
 
-# --- CẬP NHẬT PHẦN CẤU HÌNH ---
-# Dán ID thư mục bạn vừa lấy ở Bước 2 vào đây
-DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy" 
-
-# --- HÀM UPLOAD ĐÃ SỬA LỖI ---
-def upload_to_drive(file_obj, folder_name):
-    if not file_obj: return ""
-    try:
-        creds = get_gcp_creds()
-        service = build('drive', 'v3', credentials=creds)
-        
-        # SỬA LỖI: Không để Service Account tự tạo folder gốc nữa
-        # Mà dùng luôn folder bạn đã share cho nó
-        pid = DRIVE_FOLDER_ID 
-            
-        # 1. Tìm hoặc tạo folder con (theo Job) bên trong folder gốc
-        q_sub = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{pid}' in parents"
-        res_sub = service.files().list(q=q_sub, fields="files(id)").execute()
-        
-        if res_sub.get('files'):
-            fid = res_sub['files'][0]['id']
-        else:
-            # Tạo folder con nằm trong folder gốc
-            file_metadata = {
-                'name': folder_name,
-                'mimeType': 'application/vnd.google-apps.folder',
-                'parents': [pid]
-            }
-            fid = service.files().create(body=file_metadata, fields='id').execute().get('id')
-            # Set quyền folder con công khai
-            try: service.permissions().create(fileId=fid, body={'type': 'anyone', 'role': 'reader'}).execute()
-            except: pass
-        
-        # 2. Upload File vào folder con
-        file_obj.seek(0)
-        media = MediaIoBaseUpload(file_obj, mimetype=file_obj.type)
-        file_metadata = {
-            'name': file_obj.name,
-            'parents': [fid]
-        }
-        
-        f = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
-        file_id = f.get('id')
-        
-        # Set quyền file công khai để xem được trên web
-        try: service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
-        except: pass
-        
-        return f.get('webViewLink')
-    except Exception as e: 
-        st.error(f"Lỗi upload: {e}")
-
-# [CẬP NHẬT QUAN TRỌNG] Hàm upload có set quyền công khai
-def upload_to_drive(file_obj, folder_name):
-    if not file_obj: return ""
-    try:
-        creds = get_gcp_creds(); service = build('drive', 'v3', credentials=creds)
-        
-        # 1. Tìm hoặc tạo folder cha APP_DATA
-        q = "mimeType='application/vnd.google-apps.folder' and name='APP_DATA'"
-        res = service.files().list(q=q, fields="files(id)").execute()
-        if not res.get('files'): 
-            pid = service.files().create(body={'name': 'APP_DATA', 'mimeType': 'application/vnd.google-apps.folder'}, fields='id').execute().get('id')
-        else:
-            pid = res['files'][0]['id']
-            
-        # 2. Tìm hoặc tạo folder con (theo Job)
-        q_sub = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{pid}' in parents"
-        res_sub = service.files().list(q=q_sub, fields="files(id)").execute()
-        
-        if res_sub.get('files'):
-            fid = res_sub['files'][0]['id']
-        else:
-            fid = service.files().create(body={'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [pid]}, fields='id').execute().get('id')
-            # Set quyền folder con công khai luôn cho tiện
-            service.permissions().create(fileId=fid, body={'type': 'anyone', 'role': 'reader'}).execute()
-        
-        # 3. Upload File
-        file_obj.seek(0)
-        media = MediaIoBaseUpload(file_obj, mimetype=file_obj.type)
-        f = service.files().create(body={'name': file_obj.name, 'parents': [fid]}, media_body=media, fields='id, webViewLink').execute()
-        file_id = f.get('id')
-        
-        # [QUAN TRỌNG] Set quyền file là "Anyone with link" để xem được trên web
-        service.permissions().create(fileId=file_id, body={'type': 'anyone', 'role': 'reader'}).execute()
-        
-        return f.get('webViewLink')
-    except Exception as e: 
-        st.error(f"Lỗi upload: {e}")
-        return ""
-
-# --- 4. LOGIC HỆ THỐNG ---
+# --- 5. LOGIC HỆ THỐNG ---
 def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
 
 def send_telegram_msg(msg):
@@ -243,12 +173,15 @@ def get_all_jobs_df():
         if 'file_link' not in df.columns: df['file_link'] = ""
     return df
 
-# --- XỬ LÝ HỒ SƠ ---
+# --- 6. XỬ LÝ HỒ SƠ (Dùng hàm upload mới) ---
 def add_job(n, p, a, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     sh = get_sheet(); now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     dl = (datetime.now()+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
     jid = int(time.time())
+    
+    # Gọi hàm upload mới
     link = upload_to_drive(f, f"{jid}_{n}")
+    
     log = f"[{now}] {u}: Khởi tạo"
     if link: log += f" | File: {link}"
     asn_clean = asn.split(" - ")[0] if asn else ""
@@ -258,14 +191,18 @@ def add_job(n, p, a, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     code = generate_code(jid, now, n)
     type_msg = "(CHỈ ĐO ĐẠC)" if is_survey else ""
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
-    send_telegram_msg(f"🚀 <b>MỚI #{jid} {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}\n📎 {link}")
+    file_msg = f"\n📎 {link}" if link else ""
+    send_telegram_msg(f"🚀 <b>MỚI #{jid} {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}{file_msg}")
 
 def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid):
     sh = get_sheet(); cell = sh.find(str(jid))
     if cell:
         r = cell.row; now = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); lnk = ""
         c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
+        
+        # Gọi hàm upload mới
         if f: lnk = upload_to_drive(f, f"{jid}_{c_name}")
+        
         nxt = "7. Hoàn thành" if is_survey==1 and stg=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(stg)
         if nxt:
             sh.update_cell(r, 6, nxt)
@@ -312,7 +249,7 @@ def terminate_job(jid, rs, u):
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
-# --- 5. VISUAL ---
+# --- 7. VISUAL (Giao diện) ---
 def render_progress_bar(current_stage, status):
     try: idx = STAGES_ORDER.index(current_stage)
     except: idx = 0
@@ -327,13 +264,13 @@ def render_progress_bar(current_stage, status):
         h += f'<div class="step-item"><div class="step-circle {cls}">{ico}</div><div style="font-size:11px">{s.split(". ")[1]}</div></div>'
     st.markdown(h+'</div>', unsafe_allow_html=True)
 
-# --- 6. UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V15.3", page_icon="☁️", layout="wide")
+# --- 8. GIAO DIỆN CHÍNH ---
+st.set_page_config(page_title="Đo Đạc Cloud V16 - Fix Upload", page_icon="☁️", layout="wide")
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 
 if not st.session_state['logged_in']:
-    st.title("🔐 Đăng nhập V15.3 (Cloud)")
+    st.title("🔐 Đăng nhập (V16 Final)")
     c1, c2 = st.columns(2)
     with c1:
         u = st.text_input("User"); p = st.text_input("Pass", type='password')
@@ -393,7 +330,7 @@ else:
                                 st.markdown("---")
                                 st.markdown("**📂 File đính kèm:**")
                                 
-                                # --- XỬ LÝ HIỂN THỊ FILE NÂNG CAO ---
+                                # --- XỬ LÝ HIỂN THỊ FILE VÀ PREVIEW ---
                                 all_links = extract_links(j['logs'])
                                 if j['file_link']: all_links.insert(0, j['file_link'])
                                 unique_links = list(set(all_links))
@@ -402,7 +339,7 @@ else:
                                 else:
                                     for idx, link in enumerate(unique_links):
                                         file_id = get_drive_id(link)
-                                        # Tạo link xem và tải
+                                        # Tạo link tải trực tiếp
                                         view_link = link
                                         down_link = f"https://drive.google.com/uc?export=download&id={file_id}" if file_id else link
                                         
@@ -415,10 +352,10 @@ else:
                                             col_v.link_button("👁️ Xem", view_link)
                                             col_d.link_button("⬇️ Tải về", down_link)
                                             
-                                            # Nhúng Preview nếu có thể
+                                            # Nhúng Preview nếu có ID
                                             if file_id:
                                                 preview_url = f"https://drive.google.com/file/d/{file_id}/preview"
-                                                with st.expander("🔍 Xem nhanh (Preview)"):
+                                                with st.expander(f"🔍 Xem nhanh File {idx+1}"):
                                                     st.markdown(f'<iframe src="{preview_url}" width="100%" height="500" allow="autoplay"></iframe>', unsafe_allow_html=True)
                             
                             with t2:
@@ -464,7 +401,7 @@ else:
 
         except Exception as e: st.error(f"Lỗi: {e}")
 
-    # --- CÁC TAB KHÁC GIỮ NGUYÊN ---
+    # --- CÁC TAB KHÁC ---
     elif sel == "💰 Công Nợ":
         st.title("💰 Quản Lý Công Nợ")
         try:
@@ -507,5 +444,3 @@ else:
                     nr = c2.selectbox("Quyền", ROLES, index=idx, key=u['username'])
                     if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Lưu!"); st.rerun()
         else: st.error("Cấm truy cập!")
-
-
