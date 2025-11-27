@@ -12,14 +12,12 @@ from google.oauth2.service_account import Credentials
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
-TELEGRAM_CHAT_ID = "-5055192262" # Đảm bảo ID nhóm đúng
+TELEGRAM_CHAT_ID = "-5055192262" 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
-# ==============================================================================
 # KEY KẾT NỐI
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyEMEGyS_sVCA4eyVRFXxnOuGqMnJOKOIqZqKxi4HpYBcpr7U72WUXCoKLm20BQomVC/exec"
 DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy"
-# ==============================================================================
 
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
 STAGES_ORDER = ["1. Tạo mới", "2. Đo đạc", "3. Làm hồ sơ", "4. Ký hồ sơ", "5. Lấy hồ sơ", "6. Nộp hồ sơ", "7. Hoàn thành"]
@@ -41,21 +39,15 @@ def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
     return match.group(1) if match else ""
 
-# [QUAN TRỌNG] Hàm tạo tên chuẩn duy nhất (Dùng cho cả hiển thị và đặt tên folder)
 def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
     try:
-        jid_str = str(jid); seq = jid_str[-2:] # Lấy 2 số cuối ID
+        jid_str = str(jid); seq = jid_str[-2:] 
         d_obj = datetime.strptime(str(start_time), "%Y-%m-%d %H:%M:%S")
-        date_str = d_obj.strftime('%d%m%y') # 271125
+        date_str = d_obj.strftime('%d%m%y')
     except: date_str = "000000"; seq = "00"
-    
     abbr = get_proc_abbr(proc_name) if proc_name else ""
     proc_str = f"-{abbr}" if abbr else ""
-    
-    # Xử lý số điện thoại: Xóa dấu ' nếu có để hiển thị đẹp
     clean_phone = str(phone).replace("'", "")
-    
-    # KẾT QUẢ ĐỒNG NHẤT: 271125-04-CLD lê trung 09123412 long biên
     return f"{date_str}-{seq}{proc_str} {name} {clean_phone} {addr}"
 
 def extract_files_from_log(log_text):
@@ -86,6 +78,27 @@ def get_users_sheet():
             ws.append_row(["username", "password", "fullname", "role"]); return ws
     except: return None
 
+# [MỚI] Hàm lấy sheet Audit Log (Tự tạo nếu chưa có)
+def get_audit_sheet():
+    try:
+        creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC")
+        try: return sh.worksheet("AUDIT_LOGS")
+        except: 
+            ws = sh.add_worksheet(title="AUDIT_LOGS", rows="1000", cols="4")
+            ws.append_row(["Timestamp", "User", "Action", "Details"]); return ws
+    except: return None
+
+# [MỚI] Hàm ghi nhật ký hệ thống
+def log_to_audit(user, action, details):
+    def _log():
+        try:
+            ws = get_audit_sheet()
+            if ws:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ws.append_row([now, user, action, details])
+        except: pass
+    threading.Thread(target=_log).start()
+
 def upload_to_drive(file_obj, sub_folder_name):
     if not file_obj: return None, None
     try:
@@ -104,7 +117,7 @@ def find_row_index(sh, jid):
     try: ids = sh.col_values(1); return ids.index(str(jid)) + 1
     except: return None
 
-def delete_file_system(job_id, file_link, file_name):
+def delete_file_system(job_id, file_link, file_name, user):
     file_id = get_drive_id(file_link)
     if file_id:
         try: requests.post(APPS_SCRIPT_URL, json={"action": "delete", "file_id": file_id})
@@ -115,6 +128,7 @@ def delete_file_system(job_id, file_link, file_name):
         new_log = current_log.replace(f" | File: {file_name} - {file_link}", "").replace(f" | File: {file_link}", "")
         sh.update_cell(r, 11, new_log)
         if sh.cell(r, 10).value == file_link: sh.update_cell(r, 10, "")
+        log_to_audit(user, "DELETE_FILE", f"Job {job_id}: Deleted file {file_name}")
 
 def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
 
@@ -163,24 +177,18 @@ def get_daily_sequence_id():
     else: max_seq = max([int(jid[-2:]) for jid in today_ids]); seq = max_seq + 1
     return int(f"{prefix}{seq:02}"), f"{seq:02}"
 
-# --- 3. LOGIC NGHIỆP VỤ (ĐÃ SỬA LỖI ĐỒNG BỘ) ---
+# --- 3. LOGIC NGHIỆP VỤ ---
 def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     sh = get_sheet(); now = datetime.now(); now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     date_code = now.strftime('%d%m%Y'); dl = (now+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
     jid, seq_str = get_daily_sequence_id()
-    
-    # [FIX] Ép kiểu SĐT thành chuỗi có dấu ' để giữ số 0
     phone_db = f"'{p}" 
-    
-    # [FIX] Tên Folder đồng nhất ngay từ đầu
     full_name_str = generate_unique_name(jid, now_str, n, p, a, proc)
     
-    # Upload vào folder đúng tên
-    link = ""; fname = ""
-    log_file_str = ""
+    link = ""; fname = ""; log_file_str = ""
     if f: 
         for uploaded_file in f:
-            l, n_f = upload_to_drive(uploaded_file, full_name_str) # Upload vào folder full tên
+            l, n_f = upload_to_drive(uploaded_file, full_name_str)
             if l:
                 log_file_str += f" | File: {n_f} - {l}"
                 if link == "": link = l; fname = n_f
@@ -191,36 +199,29 @@ def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     asn_clean = asn.split(" - ")[0] if asn else ""
     sv_flag = 1 if is_survey else 0; dep_flag = 1 if deposit_ok else 0
     
-    # Lưu Phone vào DB có dấu '
     sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
+    log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
     
     type_msg = f"({proc.upper()})"
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
     file_msg = f"\n📎 Có {len(f)} file đính kèm" if f else ""
     assign_msg = f"👉 <b>{asn_clean}</b>"
-    
-    # Gửi Tele dùng tên full
     send_telegram_msg(f"🚀 <b>MỚI #{seq_str} {type_msg}</b>\n📂 <b>{full_name_str}</b>\n{assign_msg}\n💰 {money_msg}{file_msg}")
 
 def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid, result_date=None):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
         row_data = sh.row_values(r)
-        # [FIX] Tái tạo lại tên folder chính xác từ dữ liệu gốc
         proc_name = extract_proc_from_log(row_data[10])
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], proc_name)
-        
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Upload vào đúng folder full tên
         log_file_str = ""
         if f_list:
             for uploaded_file in f_list:
-                l, n_f = upload_to_drive(uploaded_file, full_code) # <-- DÙNG FULL CODE
+                l, n_f = upload_to_drive(uploaded_file, full_code)
                 if l: log_file_str += f" | File: {n_f} - {l}"
 
         nxt = "7. Hoàn thành" if is_survey==1 and stg=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(stg)
-        
         if nxt:
             sh.update_cell(r, 6, nxt)
             assign_str = ""; assign_tele = ""
@@ -230,18 +231,17 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
             
             if result_date:
                 new_deadline = result_date.strftime("%Y-%m-%d %H:%M:%S")
-                sh.update_cell(r, 9, new_deadline)
-                nt += f" (Hẹn trả: {result_date.strftime('%d/%m/%Y')})"
+                sh.update_cell(r, 9, new_deadline); nt += f" (Hẹn trả: {result_date.strftime('%d/%m/%Y')})"
             else:
                 sh.update_cell(r, 9, (datetime.now()+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S"))
             
             sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
-            
             olog = sh.cell(r, 11).value
             nlog = f"\n[{now}] {u}: {stg}->{nxt}{assign_str} | Note: {nt}{log_file_str}"
             sh.update_cell(r, 11, olog + nlog)
             if nxt=="7. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
             
+            log_to_audit(u, "UPDATE_STAGE", f"ID: {jid}, {stg} -> {nxt}")
             send_telegram_msg(f"✅ <b>CẬP NHẬT</b>\n📂 <b>{full_code}</b>\n{stg} ➡ <b>{nxt}</b>\n👤 {u}{assign_tele}")
 
 def return_to_previous_stage(jid, current_stage, reason, u):
@@ -255,9 +255,10 @@ def return_to_previous_stage(jid, current_stage, reason, u):
                 olog = sh.cell(r, 11).value
                 nlog = f"\n[{datetime.now()}] {u}: ⬅️ TRẢ HỒ SƠ ({current_stage} -> {prev_stage}) | Lý do: {reason}"
                 sh.update_cell(r, 11, olog + nlog)
-                
                 row_data = sh.row_values(r)
                 full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
+                
+                log_to_audit(u, "RETURN_JOB", f"ID: {jid}, {current_stage} -> {prev_stage}")
                 send_telegram_msg(f"↩️ <b>TRẢ HỒ SƠ</b>\n📂 <b>{full_code}</b>\n{current_stage} ➡ <b>{prev_stage}</b>\n👤 Bởi: {u}\n⚠️ Lý do: {reason}")
                 return True
         except: return False
@@ -269,6 +270,7 @@ def update_finance_only(jid, deposit_ok, fee_amount, is_paid, u):
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
+        log_to_audit(u, "UPDATE_FINANCE", f"ID: {jid}, Fee: {fee_amount}")
         send_telegram_msg(f"💰 <b>TÀI CHÍNH</b>\n📂 <b>{full_code}</b>\n👤 {u}\nPhí: {fee_amount:,} VNĐ")
 
 def pause_job(jid, rs, u):
@@ -278,6 +280,7 @@ def pause_job(jid, rs, u):
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 7, "Tạm dừng")
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
+        log_to_audit(u, "PAUSE_JOB", f"ID: {jid}")
         send_telegram_msg(f"⛔ <b>TẠM DỪNG</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
 def resume_job(jid, u):
@@ -287,6 +290,7 @@ def resume_job(jid, u):
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 7, "Đang xử lý")
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
+        log_to_audit(u, "RESUME_JOB", f"ID: {jid}")
         send_telegram_msg(f"▶️ <b>KHÔI PHỤC</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}")
 
 def terminate_job(jid, rs, u):
@@ -296,21 +300,38 @@ def terminate_job(jid, rs, u):
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 7, "Kết thúc sớm")
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
+        log_to_audit(u, "TERMINATE_JOB", f"ID: {jid}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
-def delete_job_permanently(jid, u):
+# [MỚI] Chuyển vào thùng rác (Soft Delete)
+def move_to_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        row_data = sh.row_values(r)
-        full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
+        sh.update_cell(r, 7, "Đã xóa") # Cột 7 là status
+        log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}")
+        st.toast("Đã chuyển vào thùng rác!")
+
+# [MỚI] Khôi phục từ thùng rác
+def restore_from_trash(jid, u):
+    sh = get_sheet(); r = find_row_index(sh, jid)
+    if r:
+        sh.update_cell(r, 7, "Đang xử lý")
+        log_to_audit(u, "RESTORE_JOB", f"ID: {jid}")
+        st.toast("Đã khôi phục hồ sơ!")
+
+# [MỚI] Xóa vĩnh viễn
+def delete_forever(jid, u):
+    sh = get_sheet(); r = find_row_index(sh, jid)
+    if r:
         sh.delete_rows(r)
-        send_telegram_msg(f"🗑️ <b>ĐÃ XÓA HỒ SƠ</b>\n📂 {full_code}\n👤 Bởi Admin: {u}")
+        log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}")
+        st.toast("Đã xóa vĩnh viễn!")
 
 # --- 4. UI COMPONENTS ---
 def render_progress_bar(current_stage, status):
     try: idx = STAGES_ORDER.index(current_stage)
     except: idx = 0
-    color = "#dc3545" if status in ["Tạm dừng", "Kết thúc sớm"] else "#ffc107"
+    color = "#dc3545" if status in ["Tạm dừng", "Kết thúc sớm", "Đã xóa"] else "#ffc107"
     st.markdown(f"""<style>.step-container {{display: flex; justify-content: space-between; margin-bottom: 15px;}} .step-item {{flex: 1; text-align: center; position: relative;}} .step-item:not(:last-child)::after {{content: ''; position: absolute; top: 15px; left: 50%; width: 100%; height: 2px; background: #e0e0e0; z-index: -1;}} .step-circle {{width: 30px; height: 30px; margin: 0 auto 5px; border-radius: 50%; line-height: 30px; color: white; font-weight: bold; font-size: 12px;}} .done {{background: #28a745;}} .active {{background: {color}; color: black;}} .pending {{background: #e9ecef; color: #999;}}</style>""", unsafe_allow_html=True)
     h = '<div class="step-container">'; 
     for i, s in enumerate(STAGES_ORDER):
@@ -323,7 +344,6 @@ def render_progress_bar(current_stage, status):
 
 def render_job_card(j, user, role):
     proc_name = extract_proc_from_log(j['logs'])
-    # Dùng hàm chuẩn hóa tên
     code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
     now = datetime.now()
     try: dl_dt = pd.to_datetime(j['deadline'])
@@ -362,15 +382,15 @@ def render_job_card(j, user, role):
                             with col_x.popover("🗑️", help="Xóa File"):
                                 st.write("Xóa file này?")
                                 if st.button("Xóa ngay", key=f"del_{j['id']}_{idx}_{int(time.time())}"):
-                                    delete_file_system(j['id'], link, fname); st.toast("Đã xóa file!"); time.sleep(1); st.rerun()
+                                    delete_file_system(j['id'], link, fname, user); st.toast("Đã xóa file!"); time.sleep(1); st.rerun()
             if role == "Quản lý":
                 st.divider()
                 with st.container():
-                    st.markdown("#### 🛡️ Khu vực Admin")
-                    with st.popover("🗑️ Xóa Hồ Sơ Này", use_container_width=True):
-                        st.error("Hành động này sẽ xóa vĩnh viễn hồ sơ!")
-                        if st.button("XÁC NHẬN XÓA", key=f"perm_del_{j['id']}", type="primary"):
-                            delete_job_permanently(j['id'], user); st.toast("Đã xóa hồ sơ!"); time.sleep(1.5); st.rerun()
+                    # [MỚI] Nút xóa chuyển thành Soft Delete
+                    with st.popover("🗑️ Xóa Hồ Sơ (Vào thùng rác)", use_container_width=True):
+                        st.warning("Hồ sơ sẽ được chuyển vào Thùng Rác. Bạn có thể khôi phục sau.")
+                        if st.button("XÁC NHẬN XÓA", key=f"soft_del_{j['id']}", type="primary"):
+                            move_to_trash(j['id'], user); time.sleep(1); st.rerun()
 
         with t2:
             if j['status'] in ['Tạm dừng', 'Kết thúc sớm']:
@@ -450,8 +470,9 @@ else:
     st.sidebar.title(f"👤 {user}"); st.sidebar.info(f"{role}")
     if st.sidebar.button("Đăng xuất"): st.session_state['logged_in']=False; st.rerun()
     
-    menu = ["🏠 Việc Của Tôi", "🔍 Tra Cứu", "📝 Tạo Hồ Sơ", "📊 Báo Cáo"]; 
-    if role == "Quản lý": menu.insert(1, "💰 Công Nợ"); menu.append("👥 Nhân Sự")
+    # [MỚI] Menu Admin có thêm Thùng Rác và Nhật Ký
+    menu = ["🏠 Việc Của Tôi", "🔍 Tra Cứu", "📝 Tạo Hồ Sơ", "📊 Báo Cáo"]
+    if role == "Quản lý": menu.extend(["💰 Công Nợ", "👥 Nhân Sự", "🗑️ Thùng Rác", "🛡️ Nhật Ký"])
     sel = st.sidebar.radio("Menu", menu)
 
     if sel == "🏠 Việc Của Tôi":
@@ -459,8 +480,11 @@ else:
         df = get_all_jobs_df()
         if df.empty: st.info("Trống!")
         else:
-            if role != "Quản lý": my_df = df[(df['assigned_to'].astype(str) == user) & (~df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))]
-            else: my_df = df[~df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
+            # [MỚI] Lọc bỏ hồ sơ đã xóa
+            active_df = df[df['status'] != 'Đã xóa']
+            
+            if role != "Quản lý": my_df = active_df[(active_df['assigned_to'].astype(str) == user) & (~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))]
+            else: my_df = active_df[~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
             
             if my_df.empty: st.info("Hết việc!")
             else:
@@ -491,8 +515,9 @@ else:
         st.title("💰 Quản Lý Công Nợ")
         try:
             df = get_all_jobs_df()
-            if not df.empty:
-                unpaid = df[df['is_paid'].apply(safe_int) == 0]
+            active_df = df[df['status'] != 'Đã xóa']
+            if not active_df.empty:
+                unpaid = active_df[active_df['is_paid'].apply(safe_int) == 0]
                 st.metric("Tổng hồ sơ chưa thu tiền", len(unpaid))
                 if not unpaid.empty:
                     unpaid['Mã'] = unpaid.apply(lambda x: generate_unique_name(x['id'], x['start_time'], x['customer_name'], x['customer_phone'], x['address'], extract_proc_from_log(x['logs'])), axis=1)
@@ -509,11 +534,15 @@ else:
                 today = date.today(); first_day = today.replace(day=1)
                 date_range = st.date_input("📅 Khoảng thời gian", (first_day, today), format="DD/MM/YYYY")
         df = get_all_jobs_df()
-        if not df.empty and 'start_dt' in df.columns:
+        
+        # [MỚI] Lọc hồ sơ đã xóa trong tra cứu
+        active_df = df[df['status'] != 'Đã xóa']
+        
+        if not active_df.empty and 'start_dt' in active_df.columns:
             if isinstance(date_range, tuple) and len(date_range) == 2:
-                start_d, end_d = date_range; mask_date = (df['start_dt'] >= start_d) & (df['start_dt'] <= end_d)
-                filtered_df = df.loc[mask_date]
-            else: filtered_df = df
+                start_d, end_d = date_range; mask_date = (active_df['start_dt'] >= start_d) & (active_df['start_dt'] <= end_d)
+                filtered_df = active_df.loc[mask_date]
+            else: filtered_df = active_df
             if q:
                 search_df = filtered_df.copy()
                 search_df['display_id'] = search_df.apply(lambda x: generate_unique_name(x['id'], x['start_time'], x['customer_name'], x['customer_phone'], x['address'], extract_proc_from_log(x['logs'])), axis=1)
@@ -528,18 +557,19 @@ else:
                 st.success(f"Tìm thấy {len(final_res)} hồ sơ phù hợp.")
                 for i, j in final_res.iterrows(): render_job_card(j, user, role)
             else: st.warning("Không tìm thấy hồ sơ nào.")
-        elif df.empty: st.info("Chưa có dữ liệu.")
+        elif active_df.empty: st.info("Chưa có dữ liệu.")
 
     elif sel == "📊 Báo Cáo":
         st.title("📊 Báo Cáo & Thống Kê")
         df = get_all_jobs_df()
-        if not df.empty:
+        active_df = df[df['status'] != 'Đã xóa']
+        if not active_df.empty:
             col_d1, col_d2 = st.columns(2)
             today = date.today(); first_day = today.replace(day=1)
             start_d = col_d1.date_input("Từ ngày", first_day); end_d = col_d2.date_input("Đến ngày", today)
-            df['start_dt'] = pd.to_datetime(df['start_time']).dt.date
-            mask = (df['start_dt'] >= start_d) & (df['start_dt'] <= end_d)
-            filtered_df = df.loc[mask]
+            active_df['start_dt'] = pd.to_datetime(active_df['start_time']).dt.date
+            mask = (active_df['start_dt'] >= start_d) & (active_df['start_dt'] <= end_d)
+            filtered_df = active_df.loc[mask]
             st.divider()
             if filtered_df.empty: st.warning("Không có dữ liệu.")
             else:
@@ -582,3 +612,36 @@ else:
                         else: st.info("Admin")
         else: st.error("Cấm truy cập!")
 
+    # [MỚI] GIAO DIỆN THÙNG RÁC
+    elif sel == "🗑️ Thùng Rác":
+        if role == "Quản lý":
+            st.title("🗑️ Thùng Rác (Hồ sơ đã xóa)")
+            df = get_all_jobs_df()
+            trash_df = df[df['status'] == 'Đã xóa']
+            
+            if trash_df.empty:
+                st.success("Thùng rác trống!")
+            else:
+                for i, j in trash_df.iterrows():
+                    proc_name = extract_proc_from_log(j['logs'])
+                    code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
+                    with st.expander(f"❌ {code_display}"):
+                        st.write(f"Ngày xóa: {j['logs'].splitlines()[-1] if j['logs'] else 'N/A'}")
+                        c1, c2 = st.columns(2)
+                        if c1.button("♻️ Khôi phục", key=f"rest_{j['id']}"):
+                            restore_from_trash(j['id'], user); time.sleep(1); st.rerun()
+                        if c2.button("🔥 Xóa vĩnh viễn", key=f"del_forever_{j['id']}"):
+                            delete_forever(j['id'], user); time.sleep(1); st.rerun()
+        else: st.error("Cấm truy cập!")
+
+    # [MỚI] GIAO DIỆN NHẬT KÝ
+    elif sel == "🛡️ Nhật Ký":
+        if role == "Quản lý":
+            st.title("🛡️ Nhật Ký Hệ Thống (Audit Logs)")
+            audit_sheet = get_audit_sheet()
+            if audit_sheet:
+                audit_data = audit_sheet.get_all_records()
+                audit_df = pd.DataFrame(audit_data)
+                st.dataframe(audit_df, use_container_width=True)
+            else: st.error("Không kết nối được nhật ký.")
+        else: st.error("Cấm truy cập!")
