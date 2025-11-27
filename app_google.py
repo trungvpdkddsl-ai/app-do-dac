@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import time
 import requests
 import threading
@@ -16,7 +16,7 @@ TELEGRAM_CHAT_ID = "-5046493421"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
 # ==============================================================================
-# KEY KẾT NỐI
+# KEY KẾT NỐI (CỦA BẠN)
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyEMEGyS_sVCA4eyVRFXxnOuGqMnJOKOIqZqKxi4HpYBcpr7U72WUXCoKLm20BQomVC/exec"
 DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy"
 # ==============================================================================
@@ -38,32 +38,34 @@ def safe_int(value):
         return int(float(str(value).replace(",", "").replace(".", "")))
     except: return 0
 
-# [MỚI] Hàm viết tắt thủ tục
 def get_proc_abbr(proc_name):
-    mapping = {
-        "Cấp lần đầu": "CLD",
-        "Cấp đổi": "CD",
-        "Chuyển quyền": "CQ"
-    }
-    # Mặc định lấy ký tự đầu nếu không khớp
+    """Viết tắt thủ tục"""
+    mapping = {"Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ"}
     return mapping.get(proc_name, "K")
 
-# [CẬP NHẬT] Hàm sinh mã hiển thị đầy đủ
-def generate_full_name(jid, start, name, phone="", addr="", proc_name=""):
-    try: d = datetime.strptime(str(start), "%Y-%m-%d %H:%M:%S").strftime('%d%m%y')
-    except: d = datetime.now().strftime('%d%m%y')
-    
+def extract_proc_from_log(log_text):
+    """Lấy tên thủ tục từ log"""
+    match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
+    return match.group(1) if match else ""
+
+def generate_display_name(jid, start_time, name, phone, addr, proc_name):
+    """Tạo tên hiển thị chuẩn: Ngày-STT-ThủTục Tên SĐT ĐC"""
+    try:
+        # ID dạng 25112701 -> Lấy 2 số cuối làm STT
+        jid_str = str(jid)
+        seq = jid_str[-2:] 
+        
+        # Ngày tháng dạng 271125
+        d_obj = datetime.strptime(str(start_time), "%Y-%m-%d %H:%M:%S")
+        date_str = d_obj.strftime('%d%m%y')
+    except:
+        date_str = "000000"; seq = "00"
+
     abbr = get_proc_abbr(proc_name) if proc_name else ""
     proc_str = f"-{abbr}" if abbr else ""
     
-    # Định dạng: 271125-1764219494-CD Lê Trung 0962630491 Thiều Xuân
-    return f"{d}-{int(jid)}{proc_str} {name} {phone} {addr}"
-
-# [CẬP NHẬT] Hàm tìm thủ tục từ trong Log (Vì database không có cột riêng)
-def extract_proc_from_log(log_text):
-    # Tìm chuỗi trong ngoặc sau chữ Khởi tạo. VD: Khởi tạo (Cấp đổi)
-    match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
-    return match.group(1) if match else ""
+    # KẾT QUẢ: 271125-01-CD Lê Trung 096... Vĩnh Yên
+    return f"{date_str}-{seq}{proc_str} {name} {phone} {addr}"
 
 def extract_files_from_log(log_text):
     pattern = r"File: (.*?) - (https?://[^\s]+)"
@@ -180,17 +182,43 @@ def get_all_jobs_df():
         if 'file_link' not in df.columns: df['file_link'] = ""
     return df
 
-# --- 6. XỬ LÝ HỒ SƠ ---
+# --- 6. XỬ LÝ HỒ SƠ & SINH MÃ ---
+def get_daily_sequence_id():
+    """Tính toán ID theo ngày: YYMMDDXX (25112701)"""
+    df = get_all_jobs_df()
+    now = datetime.now()
+    prefix = int(now.strftime('%y%m%d')) # 251127
+    
+    if df.empty:
+        return int(f"{prefix}01"), "01"
+    
+    # Lọc các ID bắt đầu bằng prefix ngày hôm nay
+    # ID lưu dạng int, chuyển sang str để check
+    today_ids = [str(jid) for jid in df['id'].tolist() if str(jid).startswith(str(prefix))]
+    
+    if not today_ids:
+        seq = 1
+    else:
+        # Lấy số đuôi lớn nhất
+        max_seq = max([int(jid[-2:]) for jid in today_ids])
+        seq = max_seq + 1
+        
+    seq_str = f"{seq:02}" # 01, 02...
+    full_id = int(f"{prefix}{seq_str}")
+    return full_id, seq_str
+
 def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     sh = get_sheet(); now = datetime.now()
     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    date_code = now.strftime('%d%m%Y') # Ngày tiếp nhận (271125)
+    date_code = now.strftime('%d%m%y') # 271125
     dl = (now+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
-    jid = int(time.time()) # Số thứ tự (ID)
     
-    # [CẬP NHẬT] Tên thư mục Google Drive: Ngày-ID-ThủTục Tên SĐT ĐịaChỉ
+    # [QUAN TRỌNG] Lấy ID tuần tự
+    jid, seq_str = get_daily_sequence_id()
+    
+    # Tên Folder: 271125-01-CD Le Trung 09xx Ha Noi
     abbr = get_proc_abbr(proc)
-    sub_folder = f"{date_code}-{jid}-{abbr} {n} {p} {a}"
+    sub_folder = f"{date_code}-{seq_str}-{abbr} {n} {p} {a}"
     
     link, fname = upload_to_drive(f, sub_folder)
     
@@ -202,24 +230,21 @@ def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     
     sh.append_row([jid, now_str, n, p, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
     
-    # Mã thông báo Telegram
-    code = f"{date_code}-{jid}-{abbr} {n}"
+    code_display = f"{date_code}-{seq_str}-{abbr} {n}"
     type_msg = f"({proc.upper()})"
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
     file_msg = f"\n📎 {fname}: {link}" if link else ""
     
-    send_telegram_msg(f"🚀 <b>MỚI #{jid} {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}{file_msg}")
+    send_telegram_msg(f"🚀 <b>MỚI #{seq_str} {type_msg}</b>\n📂 <b>{code_display}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}{file_msg}")
 
 def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid):
     sh = get_sheet(); cell = sh.find(str(jid))
     if cell:
         r = cell.row; now = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); lnk = ""; fname = ""
         c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
-        
-        # Upload vào folder cũ (sử dụng ID_Tên để tìm, Apps Script sẽ tự tìm)
+        # Folder cũ: Apps Script tự tìm ID_Tên gần đúng nên chỉ cần gửi phần định danh
         sub_folder = f"{int(jid)}_{c_name}" 
         if f: lnk, fname = upload_to_drive(f, sub_folder)
-        
         nxt = "7. Hoàn thành" if is_survey==1 and stg=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(stg)
         if nxt:
             sh.update_cell(r, 6, nxt)
@@ -232,9 +257,9 @@ def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, 
             sh.update_cell(r, 11, olog + nlog)
             if nxt=="7. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
             
-            # Gửi Tele (không cần thủ tục ở đây cho gọn)
-            code = f"{int(jid)} {c_name}" 
-            send_telegram_msg(f"✅ <b>CẬP NHẬT</b>\n📂 <b>{code}</b>\n{stg} ➡ <b>{nxt}</b>\n👤 {u}")
+            # Gửi Tele
+            jid_str = str(jid)[-2:] # Lấy STT
+            send_telegram_msg(f"✅ <b>CẬP NHẬT #{jid_str}</b>\n{stg} ➡ <b>{nxt}</b>\n👤 {u}")
 
 def update_finance_only(jid, deposit_ok, fee_amount, is_paid, u):
     sh = get_sheet(); cell = sh.find(str(jid))
@@ -242,28 +267,28 @@ def update_finance_only(jid, deposit_ok, fee_amount, is_paid, u):
         r = cell.row
         sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
         c_name = sh.cell(r, 3).value
-        send_telegram_msg(f"💰 <b>TÀI CHÍNH</b>\n📂 <b>{int(jid)} {c_name}</b>\n👤 {u}\nPhí: {fee_amount:,} VNĐ")
+        send_telegram_msg(f"💰 <b>TÀI CHÍNH</b>\n👤 {u}\nPhí: {fee_amount:,} VNĐ")
 
 def pause_job(jid, rs, u):
     sh = get_sheet(); cell = sh.find(str(jid))
     if cell:
-        r = cell.row; sh.update_cell(r, 7, "Tạm dừng"); c_name = sh.cell(r, 3).value;
+        r = cell.row; sh.update_cell(r, 7, "Tạm dừng");
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
-        send_telegram_msg(f"⛔ <b>TẠM DỪNG</b>\n📂 <b>{int(jid)} {c_name}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
+        send_telegram_msg(f"⛔ <b>TẠM DỪNG</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
 def resume_job(jid, u):
     sh = get_sheet(); cell = sh.find(str(jid))
     if cell:
-        r = cell.row; sh.update_cell(r, 7, "Đang xử lý"); c_name = sh.cell(r, 3).value; 
+        r = cell.row; sh.update_cell(r, 7, "Đang xử lý");
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
-        send_telegram_msg(f"▶️ <b>KHÔI PHỤC</b>\n📂 <b>{int(jid)} {c_name}</b>\n👤 Bởi: {u}")
+        send_telegram_msg(f"▶️ <b>KHÔI PHỤC</b>\n👤 Bởi: {u}")
 
 def terminate_job(jid, rs, u):
     sh = get_sheet(); cell = sh.find(str(jid))
     if cell:
-        r = cell.row; sh.update_cell(r, 7, "Kết thúc sớm"); c_name = sh.cell(r, 3).value; 
+        r = cell.row; sh.update_cell(r, 7, "Kết thúc sớm");
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
-        send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{int(jid)} {c_name}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
+        send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
 def render_progress_bar(current_stage, status):
     try: idx = STAGES_ORDER.index(current_stage)
@@ -323,9 +348,9 @@ else:
                 k1.metric("🔴 Quá Hạn", len(over), border=True); k2.metric("🟡 Gấp", len(soon), border=True); k3.metric("🟢 Tổng", len(my_df), border=True); st.divider()
 
                 for i, j in my_df.iterrows():
-                    # [CẬP NHẬT] Lấy thủ tục từ Log để hiển thị lên Header
                     proc_name = extract_proc_from_log(j['logs'])
-                    code_display = generate_full_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
+                    # HIỂN THỊ TÊN CHUẨN: Ngày-ID-ThủTục Tên SĐT ĐC
+                    code_display = generate_display_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
                     
                     icon = "⛔" if j['status']=='Tạm dừng' else "⏹️" if j['status']=='Kết thúc sớm' else ("🔴" if j['dl_dt'] < now else "🟡" if j['dl_dt'] <= now+timedelta(days=1) else "🟢")
                     
@@ -336,9 +361,7 @@ else:
                         with t1:
                             st.subheader(f"👤 {j['customer_name']}")
                             if safe_int(j.get('is_survey_only')) == 1: st.warning("🛠️ CHỈ ĐO ĐẠC")
-                            # Hiển thị thêm thủ tục ở phần chi tiết
                             if proc_name: st.info(f"Thủ tục: {proc_name}")
-                            
                             c1, c2 = st.columns(2); c1.write(f"📞 **{j['customer_phone']}**"); c2.write(f"📍 {j['address']}")
                             c1.write(f"⏰ Hạn: **{j['deadline']}**"); c2.write(f"Trạng thái: {j['status']}")
                             st.markdown("---"); st.markdown("**📂 File đính kèm:**")
@@ -361,8 +384,8 @@ else:
                                         col_v.link_button("👁️", link, help="Xem")
                                         col_d.link_button("⬇️", down_link, help="Tải")
                                         if role == "Quản lý":
-                                            with col_x.popover("🗑️", help="Xóa File"):
-                                                st.write("Bạn chắc chắn xóa?")
+                                            with col_x.popover("🗑️", help="Xóa"):
+                                                st.write("Xóa file này?")
                                                 if st.button("Xóa ngay", key=f"del_{j['id']}_{idx}"):
                                                     delete_file_system(j['id'], link, fname)
                                                     st.toast("Đã xóa file!"); time.sleep(1); st.rerun()
@@ -414,11 +437,9 @@ else:
         with st.form("new"):
             c1, c2 = st.columns(2); n = c1.text_input("Tên Khách Hàng"); p = c2.text_input("SĐT"); 
             a = st.text_input("Địa chỉ")
-            
             c3, c4 = st.columns([1, 1])
             with c3: is_sv = st.checkbox("🛠️ CHỈ ĐO ĐẠC")
             with c4: proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
-            
             f = st.file_uploader("File", key=f"new_up_{st.session_state['uploader_key']}")
             st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
             asn = st.selectbox("Giao:", get_active_users_list()); d = st.number_input("Hạn (Ngày)", value=1)
@@ -427,8 +448,8 @@ else:
                 if n and asn: 
                     add_job(n, p, a, proc, f, user, asn, d, is_sv, dep_ok, fee_val)
                     st.session_state['uploader_key'] += 1
-                    st.success("OK! Đã lưu."); st.rerun()
-                else: st.error("Thiếu thông tin quan trọng!")
+                    st.success("OK! Hồ sơ mới đã tạo với ID ngày."); st.rerun()
+                else: st.error("Thiếu thông tin!")
 
     elif sel == "💰 Công Nợ":
         st.title("💰 Quản Lý Công Nợ")
@@ -438,8 +459,8 @@ else:
                 unpaid = df[df['is_paid'].apply(safe_int) == 0]
                 st.metric("Tổng hồ sơ chưa thu tiền", len(unpaid))
                 if not unpaid.empty:
-                    unpaid['Mã'] = unpaid.apply(lambda x: generate_full_name(x['id'], x['start_time'], x['customer_name']), axis=1)
-                    st.dataframe(unpaid[['Mã', 'customer_phone', 'survey_fee', 'deposit']], use_container_width=True)
+                    unpaid['Mã'] = unpaid.apply(lambda x: generate_display_name(x['id'], x['start_time'], x['customer_name'], x['customer_phone'], x['address'], extract_proc_from_log(x['logs'])), axis=1)
+                    st.dataframe(unpaid[['Mã', 'survey_fee', 'deposit']], use_container_width=True)
                 else: st.success("Sạch nợ!")
         except: pass
 
@@ -448,9 +469,75 @@ else:
         if q:
             df = get_all_jobs_df(); res = df[df.apply(lambda r: q.lower() in str(r).lower(), axis=1)]; st.dataframe(res)
 
+    # --- [NÂNG CẤP] BÁO CÁO KHOA HỌC ---
     elif sel == "📊 Báo Cáo":
-        st.title("Thống Kê"); df = get_all_jobs_df()
-        if not df.empty: st.bar_chart(df['current_stage'].value_counts()); st.dataframe(df)
+        st.title("📊 Báo Cáo & Thống Kê")
+        df = get_all_jobs_df()
+        
+        if not df.empty:
+            # 1. Bộ lọc thời gian
+            col_d1, col_d2 = st.columns(2)
+            today = date.today()
+            first_day = today.replace(day=1)
+            
+            start_d = col_d1.date_input("Từ ngày", first_day)
+            end_d = col_d2.date_input("Đến ngày", today)
+            
+            # Lọc dữ liệu
+            df['start_dt'] = pd.to_datetime(df['start_time']).dt.date
+            mask = (df['start_dt'] >= start_d) & (df['start_dt'] <= end_d)
+            filtered_df = df.loc[mask]
+            
+            st.divider()
+            
+            if filtered_df.empty:
+                st.warning("Không có dữ liệu trong khoảng thời gian này.")
+            else:
+                # 2. KPI Cards
+                total_jobs = len(filtered_df)
+                total_revenue = filtered_df['survey_fee'].apply(safe_int).sum()
+                total_unpaid = filtered_df[filtered_df['is_paid'].apply(safe_int) == 0]['survey_fee'].apply(safe_int).sum()
+                
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Tổng Hồ Sơ", total_jobs, border=True)
+                k2.metric("Doanh Thu (Dự kiến)", f"{total_revenue:,} đ", border=True)
+                k3.metric("Công Nợ (Chưa thu)", f"{total_unpaid:,} đ", delta_color="inverse", border=True)
+                
+                st.divider()
+                
+                # 3. Tiến độ (Dạng List & Thanh ngang)
+                st.subheader("📌 Tỉ lệ hoàn thành")
+                stage_counts = filtered_df['current_stage'].value_counts()
+                
+                for stage in STAGES_ORDER:
+                    count = stage_counts.get(stage, 0)
+                    if count > 0:
+                        pct = (count / total_jobs)
+                        c_lab, c_bar = st.columns([1, 3])
+                        c_lab.write(f"**{stage}**: {count} hồ sơ ({int(pct*100)}%)")
+                        c_bar.progress(pct)
+                
+                st.divider()
+                
+                # 4. Bảng danh sách chi tiết (Khoa học hơn)
+                st.subheader("📄 Danh sách chi tiết")
+                
+                # Tạo bản sao để format hiển thị
+                view_df = filtered_df.copy()
+                view_df['Mã Hồ Sơ'] = view_df.apply(lambda x: generate_display_name(x['id'], x['start_time'], x['customer_name'], "", "", ""), axis=1)
+                view_df['Phí'] = view_df['survey_fee'].apply(lambda x: f"{safe_int(x):,} đ")
+                
+                # Chọn cột cần thiết
+                final_view = view_df[['Mã Hồ Sơ', 'customer_name', 'current_stage', 'assigned_to', 'Phí', 'start_time']]
+                final_view.columns = ['Mã', 'Khách Hàng', 'Tiến Độ', 'Người Xử Lý', 'Phí', 'Ngày Nhận']
+                
+                st.dataframe(
+                    final_view, 
+                    use_container_width=True,
+                    hide_index=True
+                )
+        else:
+            st.info("Chưa có dữ liệu nào.")
             
     elif sel == "👥 Nhân Sự":
         if role == "Quản lý":
