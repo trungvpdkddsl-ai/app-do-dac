@@ -160,11 +160,15 @@ def get_daily_sequence_id():
 # --- 3. LOGIC NGHIỆP VỤ ---
 def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     sh = get_sheet(); now = datetime.now(); now_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    date_code = now.strftime('%d%m%Y'); dl = (now+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
+    date_code = now.strftime('%d%m%y'); dl = (now+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
     jid, seq_str = get_daily_sequence_id()
     abbr = get_proc_abbr(proc)
-    sub_folder = f"{date_code}-{seq_str}-{abbr} {n} {p} {a}"
-    link, fname = upload_to_drive(f, sub_folder)
+    
+    # [FIX] Tạo tên hiển thị đầy đủ (Web & Tele dùng chung)
+    # Định dạng: 271125-01-CLD Tên SĐT ĐịaChỉ
+    full_code_str = f"{date_code}-{seq_str}-{abbr} {n} {p} {a}"
+    
+    link, fname = upload_to_drive(f, full_code_str) # Dùng luôn tên này đặt cho thư mục
     
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
     log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}"
@@ -174,18 +178,21 @@ def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     sv_flag = 1 if is_survey else 0; dep_flag = 1 if deposit_ok else 0
     sh.append_row([jid, now_str, n, p, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
     
-    code_display = f"{date_code}-{seq_str}-{abbr} {n}"
     type_msg = f"({proc.upper()})"
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
     file_msg = f"\n📎 {fname}: {link}" if link else ""
     assign_msg = f"👉 <b>{asn_clean}</b>"
-    send_telegram_msg(f"🚀 <b>MỚI #{seq_str} {type_msg}</b>\n📂 <b>{code_display}</b>\n📍 {a}\n{assign_msg}\n💰 {money_msg}{file_msg}")
+    
+    # [TELE] Gửi mã đầy đủ
+    send_telegram_msg(f"🚀 <b>MỚI #{seq_str} {type_msg}</b>\n📂 <b>{full_code_str}</b>\n{assign_msg}\n💰 {money_msg}{file_msg}")
 
 def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
         row_data = sh.row_values(r)
+        # Tạo lại mã đầy đủ từ dữ liệu dòng
         full_code = generate_display_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
+        
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); lnk = ""; fname = ""
         sub_folder = f"{int(jid)}_{row_data[2]}" 
         if f: lnk, fname = upload_to_drive(f, sub_folder)
@@ -203,6 +210,8 @@ def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, 
             if lnk: nlog += f" | File: {fname} - {lnk}"
             sh.update_cell(r, 11, olog + nlog)
             if nxt=="7. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
+            
+            # [TELE] Gửi mã đầy đủ
             send_telegram_msg(f"✅ <b>CẬP NHẬT</b>\n📂 <b>{full_code}</b>\n{stg} ➡ <b>{nxt}</b>\n👤 {u}{assign_tele}")
 
 def update_finance_only(jid, deposit_ok, fee_amount, is_paid, u):
@@ -240,15 +249,13 @@ def terminate_job(jid, rs, u):
         olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
-# [MỚI] HÀM XÓA HỒ SƠ KHỎI DATABASE (CHO ADMIN)
 def delete_job_permanently(jid, u):
-    sh = get_sheet()
-    r = find_row_index(sh, jid)
+    sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        # Lấy thông tin lần cuối để gửi log
-        c_name = sh.cell(r, 3).value
-        sh.delete_rows(r) # Xóa dòng trong Sheet
-        send_telegram_msg(f"🗑️ <b>ĐÃ XÓA HỒ SƠ</b>\nID: {jid}\nTên: {c_name}\n👤 Bởi Admin: {u}")
+        row_data = sh.row_values(r)
+        full_code = generate_display_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
+        sh.delete_rows(r)
+        send_telegram_msg(f"🗑️ <b>ĐÃ XÓA HỒ SƠ</b>\n📂 {full_code}\n👤 Bởi Admin: {u}")
 
 # --- 4. UI COMPONENTS ---
 def render_progress_bar(current_stage, status):
@@ -302,7 +309,6 @@ def render_job_card(j, user, role):
                                 if st.button("Xóa ngay", key=f"del_{j['id']}_{idx}_{int(time.time())}"):
                                     delete_file_system(j['id'], link, fname); st.toast("Đã xóa file!"); time.sleep(1); st.rerun()
             
-            # [MỚI] KHU VỰC ADMIN XÓA HỒ SƠ
             if role == "Quản lý":
                 st.divider()
                 with st.container():
@@ -507,4 +513,3 @@ else:
                             if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Đã lưu!"); time.sleep(0.5); st.rerun()
                         else: st.info("Admin")
         else: st.error("Cấm truy cập!")
-
