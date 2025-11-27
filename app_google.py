@@ -16,13 +16,28 @@ TELEGRAM_CHAT_ID = "-5046493421"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
 # ==============================================================================
-# ĐIỀN THÔNG TIN CỦA BẠN VÀO ĐÂY
+# ĐÃ CẬP NHẬT KEY CỦA BẠN VÀO ĐÂY
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyEMEGyS_sVCA4eyVRFXxnOuGqMnJOKOIqZqKxi4HpYBcpr7U72WUXCoKLm20BQomVC/exec"
-DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy" 
+DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy"
 # ==============================================================================
 
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
 STAGES_ORDER = ["1. Tạo mới", "2. Đo đạc", "3. Làm hồ sơ", "4. Ký hồ sơ", "5. Lấy hồ sơ", "6. Nộp hồ sơ", "7. Hoàn thành"]
+
+# DANH SÁCH THỦ TỤC
+PROCEDURES_LIST = [
+    "Cấp đổi", 
+    "Cấp mới", 
+    "Tách thửa", 
+    "Hợp thửa", 
+    "Chuyển mục đích", 
+    "Tặng cho", 
+    "Thừa kế", 
+    "Đính chính", 
+    "Kiểm tra hiện trạng",
+    "Khác"
+]
+
 WORKFLOW_DEFAULT = {
     "1. Tạo mới": "2. Đo đạc", "2. Đo đạc": "3. Làm hồ sơ", "3. Làm hồ sơ": "4. Ký hồ sơ", 
     "4. Ký hồ sơ": "5. Lấy hồ sơ", "5. Lấy hồ sơ": "6. Nộp hồ sơ", "6. Nộp hồ sơ": "7. Hoàn thành", "7. Hoàn thành": None
@@ -41,10 +56,8 @@ def generate_code(jid, start, name):
     return f"{d}-{int(jid)} {name}"
 
 def extract_files_from_log(log_text):
-    # Tìm mẫu: "File: TênFile.ext - https://..."
     pattern = r"File: (.*?) - (https?://[^\s]+)"
     matches = re.findall(pattern, str(log_text))
-    # Fallback cho file cũ
     if not matches:
         raw_links = re.findall(r'(https?://[^\s]+)', str(log_text))
         return [("File cũ", l) for l in raw_links]
@@ -76,11 +89,11 @@ def get_users_sheet():
             return ws
     except: return None
 
-# --- 4. CÁC HÀM XỬ LÝ FILE (UPLOAD & DELETE) ---
+# --- 4. CÁC HÀM XỬ LÝ FILE ---
 def upload_to_drive(file_obj, sub_folder_name):
     if not file_obj: return None, None
     status_box = st.empty()
-    status_box.info(f"☁️ Đang tải '{file_obj.name}'...")
+    status_box.info(f"☁️ Đang tải '{file_obj.name}' vào thư mục: {sub_folder_name}...")
     try:
         file_content = file_obj.read()
         file_base64 = base64.b64encode(file_content).decode('utf-8')
@@ -102,37 +115,21 @@ def upload_to_drive(file_obj, sub_folder_name):
     status_box.error("❌ Lỗi Upload"); return None, None
 
 def delete_file_system(job_id, file_link, file_name):
-    """Xóa file trên Drive và xóa dòng log trong Sheet"""
-    # 1. Xóa trên Drive qua Apps Script
     file_id = get_drive_id(file_link)
     if file_id:
-        try:
-            requests.post(APPS_SCRIPT_URL, json={"action": "delete", "file_id": file_id})
-        except: pass # Bỏ qua nếu lỗi mạng, vẫn xóa trong DB
-
-    # 2. Xóa trong Database (Sheet)
+        try: requests.post(APPS_SCRIPT_URL, json={"action": "delete", "file_id": file_id})
+        except: pass
     sh = get_sheet()
     cell = sh.find(str(job_id))
     if cell:
         r = cell.row
         current_log = sh.cell(r, 11).value
-        # Logic xóa: Tìm dòng chứa link đó và xóa đi
-        # Mẫu log: ... | File: Tên - Link
-        # Chúng ta sẽ replace đoạn string đó bằng rỗng
-        
-        # Tạo đoạn text cần xóa (Thử cả 2 trường hợp có tên và không tên)
         target_str_1 = f" | File: {file_name} - {file_link}"
         target_str_2 = f" | File: {file_link}" 
-        
         new_log = current_log.replace(target_str_1, "").replace(target_str_2, "")
-        
-        # Nếu xóa xong mà log bị lỗi format (dư dấu xuống dòng), có thể clean nhẹ
         sh.update_cell(r, 11, new_log)
-        
-        # Nếu là file chính (cột 10) thì xóa luôn cột 10
         current_main_link = sh.cell(r, 10).value
-        if current_main_link == file_link:
-            sh.update_cell(r, 10, "") # Xóa cột link chính
+        if current_main_link == file_link: sh.update_cell(r, 10, "")
 
 # --- 5. LOGIC HỆ THỐNG ---
 def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
@@ -174,21 +171,31 @@ def get_all_jobs_df():
     return df
 
 # --- 6. XỬ LÝ HỒ SƠ ---
-def add_job(n, p, a, f, u, asn, d, is_survey, deposit_ok, fee_amount):
-    sh = get_sheet(); now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    dl = (datetime.now()+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
+def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
+    sh = get_sheet(); now = datetime.now()
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    date_code = now.strftime('%d%m%Y')
+    dl = (now+timedelta(days=d)).strftime("%Y-%m-%d %H:%M:%S")
     jid = int(time.time())
-    sub_folder = f"{jid}_{n}"
+    
+    # Định dạng Folder: 27112025-123456 Le Trung Ha Noi Tach Thua
+    sub_folder = f"{date_code}-{jid} {n} {a} {proc}"
+    
     link, fname = upload_to_drive(f, sub_folder)
-    log = f"[{now}] {u}: Khởi tạo"
+    
+    log = f"[{now_str}] {u}: Khởi tạo ({proc})"
     if link: log += f" | File: {fname} - {link}"
+    
     asn_clean = asn.split(" - ")[0] if asn else ""
     sv_flag = 1 if is_survey else 0; dep_flag = 1 if deposit_ok else 0
-    sh.append_row([jid, now, n, p, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
-    code = generate_code(jid, now, n)
-    type_msg = "(CHỈ ĐO ĐẠC)" if is_survey else ""
+    
+    sh.append_row([jid, now_str, n, p, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
+    
+    code = f"{date_code}-{jid} {n}"
+    type_msg = f"({proc.upper()})"
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
     file_msg = f"\n📎 {fname}: {link}" if link else ""
+    
     send_telegram_msg(f"🚀 <b>MỚI #{jid} {type_msg}</b>\n📂 <b>{code}</b>\n📍 {a}\n👉 {asn_clean}\n💰 {money_msg}{file_msg}")
 
 def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid):
@@ -196,7 +203,8 @@ def update_stage(jid, stg, nt, f, u, asn, d, is_survey, deposit_ok, fee_amount, 
     if cell:
         r = cell.row; now = datetime.now().strftime("%Y-%m-%d %H:%M:%S"); lnk = ""; fname = ""
         c_name = sh.cell(r, 3).value; start_t = sh.cell(r, 2).value
-        sub_folder = f"{jid}_{c_name}"
+        # Upload vào folder cũ (tương đối)
+        sub_folder = f"{int(jid)}_{c_name}" 
         if f: lnk, fname = upload_to_drive(f, sub_folder)
         nxt = "7. Hoàn thành" if is_survey==1 and stg=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(stg)
         if nxt:
@@ -260,7 +268,7 @@ def render_progress_bar(current_stage, status):
 st.set_page_config(page_title="Đo Đạc Cloud Pro", page_icon="☁️", layout="wide")
 
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
-if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0 # KEY QUAN TRỌNG ĐỂ RESET UPLOAD
+if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 
 if not st.session_state['logged_in']:
     st.title("🔐 Đăng nhập"); c1, c2 = st.columns(2)
@@ -328,14 +336,10 @@ else:
                                         c_icon, c_name, c_act = st.columns([0.5, 4, 2])
                                         c_icon.markdown("📎")
                                         c_name.markdown(f"**{fname}**")
-                                        
                                         col_v, col_d, col_x = c_act.columns(3)
                                         col_v.link_button("👁️", link, help="Xem")
                                         col_d.link_button("⬇️", down_link, help="Tải")
-                                        
-                                        # --- NÚT XÓA (CHỈ QUẢN LÝ) ---
                                         if role == "Quản lý":
-                                            # Dùng popover cho gọn gàng
                                             with col_x.popover("🗑️", help="Xóa File"):
                                                 st.write("Bạn chắc chắn xóa?")
                                                 if st.button("Xóa ngay", key=f"del_{j['id']}_{idx}"):
@@ -349,9 +353,7 @@ else:
                             else:
                                 with st.form(f"f{j['id']}"):
                                     nt = st.text_area("Ghi chú")
-                                    # --- UPLOAD VỚI KEY ĐỘNG ĐỂ TỰ RESET ---
                                     fl = st.file_uploader("Upload File", key=f"up_{j['id']}_{st.session_state['uploader_key']}")
-                                    
                                     cur = j['current_stage']; nxt = "7. Hoàn thành" if safe_int(j.get('is_survey_only'))==1 and cur=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(cur)
                                     if nxt and nxt!="7. Hoàn thành":
                                         st.write(f"Chuyển sang: **{nxt}**"); asn = st.selectbox("Giao", get_active_users_list()); d = st.number_input("Hạn (Ngày)", value=2)
@@ -360,7 +362,6 @@ else:
                                     if st.form_submit_button("✅ Chuyển bước"): 
                                         dep = 1 if safe_int(j.get('deposit'))==1 else 0; money = safe_int(j.get('survey_fee')); pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
                                         update_stage(j['id'], cur, nt, fl, user, asn, d, safe_int(j.get('is_survey_only')), dep, money, pdone)
-                                        # --- TĂNG KEY ĐỂ RESET KHUNG UPLOAD ---
                                         st.session_state['uploader_key'] += 1
                                         st.success("Xong!"); time.sleep(0.5); st.rerun()
                                 
@@ -387,24 +388,28 @@ else:
                             for log_line in raw_logs:
                                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
-    # --- CÁC TAB KHÁC GIỮ NGUYÊN (TẠO HỒ SƠ CŨNG CẦN KEY RESET) ---
     elif sel == "📝 Tạo Hồ Sơ":
         st.title("Tạo Hồ Sơ")
         with st.form("new"):
-            c1, c2 = st.columns(2); n = c1.text_input("Tên"); p = c2.text_input("SĐT"); a = st.text_input("Đ/c")
-            # --- UPLOAD KEY ĐỘNG CHO TẠO MỚI ---
+            c1, c2 = st.columns(2); n = c1.text_input("Tên Khách Hàng"); p = c2.text_input("SĐT"); 
+            a = st.text_input("Địa chỉ")
+            
+            # --- [CẬP NHẬT] DANH SÁCH THỦ TỤC ---
+            proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
+            
             f = st.file_uploader("File", key=f"new_up_{st.session_state['uploader_key']}")
             st.divider(); c_o, c_a = st.columns(2); is_sv = c_o.checkbox("🛠️ CHỈ ĐO ĐẠC"); 
             st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
-            asn = st.selectbox("Giao:", get_active_users_list()); d = st.number_input("Hạn", value=1)
-            if st.form_submit_button("Tạo"):
+            asn = st.selectbox("Giao:", get_active_users_list()); d = st.number_input("Hạn (Ngày)", value=1)
+            
+            if st.form_submit_button("Tạo Hồ Sơ"):
                 if n and asn: 
-                    add_job(n, p, a, f, user, asn, d, is_sv, dep_ok, fee_val)
+                    # Truyền thêm tham số 'proc' vào hàm add_job
+                    add_job(n, p, a, proc, f, user, asn, d, is_sv, dep_ok, fee_val)
                     st.session_state['uploader_key'] += 1
-                    st.success("OK!"); st.rerun()
-                else: st.error("Thiếu tin")
+                    st.success("OK! Hồ sơ đã lưu với định dạng thư mục mới."); st.rerun()
+                else: st.error("Thiếu thông tin quan trọng!")
 
-    # (Các tab còn lại Tra Cứu, Báo Cáo, Công Nợ giữ nguyên như code trước)
     elif sel == "💰 Công Nợ":
         st.title("💰 Quản Lý Công Nợ")
         try:
