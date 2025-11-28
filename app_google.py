@@ -93,18 +93,49 @@ def extract_files_from_log(log_text):
         return [("File cũ", l) for l in raw_links]
     return matches
 
+# [ĐÃ SỬA LỖI] Hàm tạo nút liên hệ Zalo/Gọi (Lọc sạch ký tự lạ)
 def render_contact_buttons(phone):
     if not phone: return ""
-    clean_phone = str(phone).replace("'", "").replace(" ", "").replace(".", "").replace("-", "")
+    
+    # Dùng Regex chỉ giữ lại các con số (0-9), loại bỏ dấu ', dấu cách, chữ cái...
+    clean_phone = re.sub(r'\D', '', str(phone))
+    
+    # Kiểm tra nếu sau khi lọc mà không còn số nào hoặc quá ngắn
+    if len(clean_phone) < 9:
+        return f"<span style='color: gray; font-style: italic;'>⚠️ SĐT lỗi: {phone}</span>"
+    
     zalo_link = f"https://zalo.me/{clean_phone}"
     call_link = f"tel:{clean_phone}"
+    
     html = f"""
     <div style="display: flex; gap: 10px; margin-bottom: 10px;">
         <a href="{zalo_link}" target="_blank" style="text-decoration: none;">
-            <div style="background-color: #0068FF; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px; display: flex; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">💬 Chat Zalo</div>
+            <div style="
+                background-color: #0068FF; 
+                color: white; 
+                padding: 6px 12px; 
+                border-radius: 6px; 
+                font-weight: bold; 
+                font-size: 14px; 
+                display: flex; 
+                align-items: center; 
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                💬 Chat Zalo
+            </div>
         </a>
         <a href="{call_link}" style="text-decoration: none;">
-            <div style="background-color: #28a745; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px; display: flex; align-items: center; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">📞 Gọi Điện</div>
+            <div style="
+                background-color: #28a745; 
+                color: white; 
+                padding: 6px 12px; 
+                border-radius: 6px; 
+                font-weight: bold; 
+                font-size: 14px; 
+                display: flex; 
+                align-items: center; 
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                📞 Gọi Điện
+            </div>
         </a>
     </div>
     """
@@ -748,3 +779,4 @@ else:
                 st.dataframe(audit_df, use_container_width=True)
             else: st.error("Không kết nối được nhật ký.")
         else: st.error("Cấm truy cập!")
+
