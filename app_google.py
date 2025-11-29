@@ -27,15 +27,10 @@ WORKFLOW_DEFAULT = {
     "4. Ký hồ sơ": "5. Lấy hồ sơ", "5. Lấy hồ sơ": "6. Nộp hồ sơ", "6. Nộp hồ sơ": "7. Hoàn thành", "7. Hoàn thành": None
 }
 
-# [CẤU HÌNH THỜI GIAN GIỚI HẠN - SLA] (Đơn vị: Giờ)
-# Mẹo: Để số 0 để test cảnh báo ngay lập tức
+# [CẤU HÌNH SLA]
 STAGE_SLA_HOURS = {
-    "1. Tạo mới": 24,      
-    "2. Đo đạc": 48,       
-    "3. Làm hồ sơ": 24,    
-    "4. Ký hồ sơ": 72,     
-    "5. Lấy hồ sơ": 24,    
-    "6. Nộp hồ sơ": 360,   
+    "1. Tạo mới": 24, "2. Đo đạc": 48, "3. Làm hồ sơ": 24,    
+    "4. Ký hồ sơ": 72, "5. Lấy hồ sơ": 24, "6. Nộp hồ sơ": 360,   
 }
 
 # --- 2. HÀM HỖ TRỢ & KẾT NỐI ---
@@ -50,27 +45,15 @@ def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
     return match.group(1) if match else ""
 
-# [CẬP NHẬT] HÀM KIỂM TRA & TRẢ VỀ THÔNG TIN THỜI GIAN
 def check_bottleneck(logs, current_stage):
     if current_stage == "7. Hoàn thành" or not logs: return False, 0, 0
-    
     try:
-        # Lấy dòng log cuối cùng để xem thời gian cập nhật gần nhất
-        # Tìm timestamp dạng [YYYY-MM-DD HH:MM:SS] ở cuối chuỗi log
         matches = re.findall(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', str(logs))
         if matches:
-            last_time_str = matches[-1] # Lấy mốc thời gian cuối cùng
-            last_dt = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
-            
-            # Tính khoảng thời gian đã trôi qua (giờ)
-            diff = datetime.now() - last_dt
-            hours_passed = int(diff.total_seconds() / 3600)
-            
-            # Lấy giới hạn
+            last_dt = datetime.strptime(matches[-1], "%Y-%m-%d %H:%M:%S")
+            hours_passed = int((datetime.now() - last_dt).total_seconds() / 3600)
             limit = STAGE_SLA_HOURS.get(current_stage, 9999) 
-            
-            is_stuck = hours_passed >= limit
-            return is_stuck, hours_passed, limit
+            return hours_passed >= limit, hours_passed, limit
     except: pass
     return False, 0, 0
 
@@ -93,53 +76,12 @@ def extract_files_from_log(log_text):
         return [("File cũ", l) for l in raw_links]
     return matches
 
-# [ĐÃ SỬA LỖI] Hàm tạo nút liên hệ Zalo/Gọi (Lọc sạch ký tự lạ)
 def render_contact_buttons(phone):
     if not phone: return ""
-    
-    # Dùng Regex chỉ giữ lại các con số (0-9), loại bỏ dấu ', dấu cách, chữ cái...
-    clean_phone = re.sub(r'\D', '', str(phone))
-    
-    # Kiểm tra nếu sau khi lọc mà không còn số nào hoặc quá ngắn
-    if len(clean_phone) < 9:
-        return f"<span style='color: gray; font-style: italic;'>⚠️ SĐT lỗi: {phone}</span>"
-    
-    zalo_link = f"https://zalo.me/{clean_phone}"
-    call_link = f"tel:{clean_phone}"
-    
-    html = f"""
-    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-        <a href="{zalo_link}" target="_blank" style="text-decoration: none;">
-            <div style="
-                background-color: #0068FF; 
-                color: white; 
-                padding: 6px 12px; 
-                border-radius: 6px; 
-                font-weight: bold; 
-                font-size: 14px; 
-                display: flex; 
-                align-items: center; 
-                box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
-                💬 Chat Zalo
-            </div>
-        </a>
-        <a href="{call_link}" style="text-decoration: none;">
-            <div style="
-                background-color: #28a745; 
-                color: white; 
-                padding: 6px 12px; 
-                border-radius: 6px; 
-                font-weight: bold; 
-                font-size: 14px; 
-                display: flex; 
-                align-items: center; 
-                box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
-                📞 Gọi Điện
-            </div>
-        </a>
-    </div>
-    """
-    return html
+    clean_phone = re.sub(r'\D', '', str(phone)) # Lọc sạch số
+    if len(clean_phone) < 9: return f"<span style='color: gray;'>SĐT: {phone}</span>"
+    zalo_link = f"https://zalo.me/{clean_phone}"; call_link = f"tel:{clean_phone}"
+    return f"""<div style="display: flex; gap: 10px; margin-bottom: 10px;"><a href="{zalo_link}" target="_blank" style="text-decoration: none;"><div style="background-color: #0068FF; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">💬 Chat Zalo</div></a><a href="{call_link}" style="text-decoration: none;"><div style="background-color: #28a745; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">📞 Gọi Điện</div></a></div>"""
 
 def calculate_deadline(start_date, days_to_add):
     current_date = start_date; added_days = 0
@@ -194,8 +136,7 @@ def upload_to_drive(file_obj, sub_folder_name):
         response = requests.post(APPS_SCRIPT_URL, json=payload)
         if response.status_code == 200:
             res_json = response.json()
-            if res_json.get("status") == "success":
-                return res_json.get("link"), file_obj.name
+            if res_json.get("status") == "success": return res_json.get("link"), file_obj.name
     except: pass
     return None, None
 
@@ -222,8 +163,7 @@ def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
 def send_telegram_msg(msg):
     if not TELEGRAM_TOKEN: return
     def run(): 
-        try: 
-            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"})
+        try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"})
         except Exception as e: print(f"Tele Error: {e}")
     threading.Thread(target=run).start()
 
@@ -241,12 +181,27 @@ def create_user(u, p, n):
         sh.append_row([u, make_hash(p), n, "Chưa cấp quyền"]); return True
     except: return False
 
-def get_all_users(): sh = get_users_sheet(); return pd.DataFrame(sh.get_all_records())
-def update_user_role(u, r): sh = get_users_sheet(); c = sh.find(u); sh.update_cell(c.row, 4, r)
-def get_active_users_list(): df = get_all_users(); return df[df['role']!='Chưa cấp quyền'].apply(lambda x: f"{x['username']} - {x['fullname']}", axis=1).tolist() if not df.empty else []
+# [FIX] Thêm CACHE để tránh lỗi Quota khi gọi nhiều lần
+@st.cache_data(ttl=60)
+def get_all_users_cached():
+    sh = get_users_sheet()
+    if sh is None: return pd.DataFrame()
+    return pd.DataFrame(sh.get_all_records())
+
+def get_all_users(): 
+    return get_all_users_cached()
+
+def update_user_role(u, r): sh = get_users_sheet(); c = sh.find(u); sh.update_cell(c.row, 4, r); get_all_users_cached.clear()
+
+def get_active_users_list(): 
+    df = get_all_users_cached()
+    if df.empty: return []
+    return df[df['role']!='Chưa cấp quyền'].apply(lambda x: f"{x['username']} - {x['fullname']}", axis=1).tolist()
 
 def get_all_jobs_df():
-    sh = get_sheet(); data = sh.get_all_records(); df = pd.DataFrame(data)
+    sh = get_sheet(); 
+    if sh is None: return pd.DataFrame() # An toàn
+    data = sh.get_all_records(); df = pd.DataFrame(data)
     if not df.empty:
         df['id'] = df['id'].apply(safe_int)
         if 'deposit' not in df.columns: df['deposit'] = 0
@@ -276,9 +231,7 @@ def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     if f: 
         for uploaded_file in f:
             l, n_f = upload_to_drive(uploaded_file, full_name_str)
-            if l:
-                log_file_str += f" | File: {n_f} - {l}"
-                if link == "": link = l; fname = n_f
+            if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
 
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
     log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{log_file_str}"
@@ -392,23 +345,17 @@ def terminate_job(jid, rs, u):
 def move_to_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.update_cell(r, 7, "Đã xóa")
-        log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}")
-        st.toast("Đã chuyển vào thùng rác!")
+        sh.update_cell(r, 7, "Đã xóa"); log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}"); st.toast("Đã chuyển vào thùng rác!")
 
 def restore_from_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.update_cell(r, 7, "Đang xử lý")
-        log_to_audit(u, "RESTORE_JOB", f"ID: {jid}")
-        st.toast("Đã khôi phục hồ sơ!")
+        sh.update_cell(r, 7, "Đang xử lý"); log_to_audit(u, "RESTORE_JOB", f"ID: {jid}"); st.toast("Đã khôi phục hồ sơ!")
 
 def delete_forever(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.delete_rows(r)
-        log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}")
-        st.toast("Đã xóa vĩnh viễn!")
+        sh.delete_rows(r); log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}"); st.toast("Đã xóa vĩnh viễn!")
 
 def scan_bottlenecks(df):
     bottlenecks = []
@@ -435,7 +382,7 @@ def render_progress_bar(current_stage, status):
         h += f'<div class="step-item"><div class="step-circle {cls}">{ico}</div><div style="font-size:11px">{s.split(". ")[1]}</div></div>'
     st.markdown(h+'</div>', unsafe_allow_html=True)
 
-def render_job_card(j, user, role):
+def render_job_card(j, user, role, user_list):
     proc_name = extract_proc_from_log(j['logs'])
     code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
     now = datetime.now()
@@ -446,27 +393,16 @@ def render_job_card(j, user, role):
     dl_status = "HÔM NAY" if dl_dt.date() == now.date() else f"Còn {(dl_dt - now).days} ngày"
     if dl_dt < now: dl_status = "QUÁ HẠN"
     
-    # [HIỂN THỊ CẢNH BÁO ĐIỂM NGHẼN TRÊN UI]
     is_stuck, hours, limit = check_bottleneck(j['logs'], j['current_stage'])
-    
-    stuck_alert = ""
-    # Nếu bị kẹt thì hiện cảnh báo đỏ
-    if is_stuck and j['status'] == "Đang xử lý":
-        stuck_alert = f" | ⚠️ KẸT {hours}H"
+    stuck_alert = f" | ⚠️ KẸT {hours}H" if is_stuck and j['status'] == "Đang xử lý" else ""
     
     icon = "⛔" if j['status']=='Tạm dừng' else "⏹️" if j['status']=='Kết thúc sớm' else ("🔴" if dl_dt < now else "🟡" if dl_dt <= now+timedelta(days=1) else "🟢")
     
     with st.expander(f"{icon} {code_display} | {j['current_stage']}{stuck_alert}"):
-        
-        # [MỚI] HIỂN THỊ THỜI GIAN XỬ LÝ
-        if j['status'] == "Đang xử lý":
-            if is_stuck:
-                st.error(f"⚠️ **CẢNH BÁO CHẬM:** Hồ sơ đã nằm ở bước '{j['current_stage']}' được **{hours} giờ**. (Quy định tối đa: {limit} giờ)")
-            else:
-                # Nếu chưa kẹt, hiện thời gian xanh
-                st.info(f"⏱️ Thời gian xử lý bước này: **{hours} giờ** / Định mức: {limit} giờ")
+        if is_stuck and j['status'] == "Đang xử lý": st.error(f"⚠️ **CẢNH BÁO CHẬM:** Hồ sơ kẹt {hours}h (Max {limit}h)")
+        else: st.info(f"⏱️ Thời gian xử lý: **{hours}h** / Định mức: {limit}h")
 
-        st.write(f"📅 **Hạn hoàn thành (Ngày trả kết quả): {dl_str}** | Trạng thái: **{dl_status}**")
+        st.write(f"📅 **Hạn hoàn thành: {dl_str}** | Trạng thái: **{dl_status}**")
         render_progress_bar(j['current_stage'], j['status'])
         t1, t2, t3, t4 = st.tabs(["ℹ️ Thông tin & File", "⚙️ Xử lý Hồ sơ", "💰 Tài Chính", "📜 Nhật ký"])
         
@@ -492,12 +428,12 @@ def render_job_card(j, user, role):
                         if role == "Quản lý":
                             with col_x.popover("🗑️", help="Xóa File"):
                                 st.write("Xóa file này?")
-                                if st.button("Xóa ngay", key=f"del_{j['id']}_{idx}"):
+                                if st.button("Xóa ngay", key=f"del_{j['id']}_{idx}_{int(time.time())}"):
                                     delete_file_system(j['id'], link, fname, user); st.toast("Đã xóa file!"); time.sleep(1); st.rerun()
             if role == "Quản lý":
                 st.divider()
                 with st.container():
-                    with st.popover("🗑️ Xóa Hồ Sơ (Vào thùng rác)", use_container_width=True):
+                    with st.popover("🗑️ Xóa Hồ Sơ", use_container_width=True):
                         st.warning("Hồ sơ sẽ được chuyển vào Thùng Rác.")
                         if st.button("XÁC NHẬN XÓA", key=f"soft_del_{j['id']}", type="primary"):
                             move_to_trash(j['id'], user); time.sleep(1); st.rerun()
@@ -509,7 +445,7 @@ def render_job_card(j, user, role):
             else:
                 with st.form(f"f{j['id']}"):
                     nt = st.text_area("Ghi chú")
-                    fl = st.file_uploader("Upload File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
+                    fl = st.file_uploader("Upload File", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
                     cur = j['current_stage']; nxt = "7. Hoàn thành" if safe_int(j.get('is_survey_only'))==1 and cur=="3. Làm hồ sơ" else WORKFLOW_DEFAULT.get(cur)
                     result_date = None
                     if nxt and nxt!="7. Hoàn thành":
@@ -519,9 +455,9 @@ def render_job_card(j, user, role):
                             col_n1, col_n2 = st.columns(2)
                             submit_date = col_n1.date_input("Ngày nộp", datetime.now())
                             result_date = col_n2.date_input("Ngày trả kết quả", datetime.now() + timedelta(days=15))
-                            asn = st.selectbox("Giao theo dõi", get_active_users_list()); d = 0 
+                            asn = st.selectbox("Giao theo dõi", user_list); d = 0 
                         else:
-                            asn = st.selectbox("Giao", get_active_users_list()); d = st.number_input("Hạn (Ngày)", value=2)
+                            asn = st.selectbox("Giao", user_list); d = st.number_input("Hạn (Ngày)", value=2)
                     else: st.info("Kết thúc"); asn=""; d=0
                     if st.form_submit_button("✅ Chuyển bước"): 
                         dep = 1 if safe_int(j.get('deposit'))==1 else 0; money = safe_int(j.get('survey_fee')); pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
@@ -534,8 +470,7 @@ def render_job_card(j, user, role):
                 with c_back.popover("⬅️ Trả hồ sơ", use_container_width=True):
                     reason_back = st.text_input("Lý do:", key=f"reason_back_{j['id']}")
                     if st.button("Xác nhận", key=f"btn_back_{j['id']}"):
-                        if return_to_previous_stage(j['id'], j['current_stage'], reason_back, user):
-                            st.success("Đã trả hồ sơ!"); time.sleep(1); st.rerun()
+                        if return_to_previous_stage(j['id'], j['current_stage'], reason_back, user): st.success("Đã trả hồ sơ!"); time.sleep(1); st.rerun()
                         else: st.error("Lỗi!")
 
                 if st.session_state.get(f'pm_{j['id']}', False):
@@ -585,6 +520,9 @@ else:
     if role == "Quản lý": menu.extend(["💰 Công Nợ", "👥 Nhân Sự", "🗑️ Thùng Rác", "🛡️ Nhật Ký"])
     sel = st.sidebar.radio("Menu", menu)
 
+    # [FIX CACHE] Lấy danh sách user 1 lần
+    user_list = get_active_users_list()
+
     if sel == "🏠 Việc Của Tôi":
         c_note, c_title = st.columns([1, 2])
         df = get_all_jobs_df()
@@ -602,7 +540,6 @@ else:
             warning_window = now + timedelta(hours=48)
             warning_jobs = my_df[(my_df['dl_dt'] > now) & (my_df['dl_dt'] <= warning_window)]
             
-            # [MỚI] Nút Admin quét điểm nghẽn
             if role == "Quản lý":
                 if c_note.button("🔍 Quét Hồ Sơ Chậm (Bottleneck)"):
                     issues = scan_bottlenecks(active_df)
@@ -633,9 +570,8 @@ else:
                 
                 st.divider()
                 st.caption(f"Đang hiển thị: {st.session_state['job_filter'].upper()} ({len(display_df)} hồ sơ)")
-                for i, j in display_df.iterrows(): render_job_card(j, user, role)
+                for i, j in display_df.iterrows(): render_job_card(j, user, role, user_list)
 
-    # ... (Các tab khác giữ nguyên như cũ)
     elif sel == "📝 Tạo Hồ Sơ":
         st.title("Tạo Hồ Sơ")
         with st.form("new"):
@@ -645,7 +581,7 @@ else:
             with c4: proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
             f = st.file_uploader("File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"new_up_{st.session_state['uploader_key']}")
             st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
-            asn = st.selectbox("Giao:", get_active_users_list()); d = st.number_input("Hạn (Ngày)", value=1)
+            asn = st.selectbox("Giao:", user_list); d = st.number_input("Hạn (Ngày)", value=1)
             if st.form_submit_button("Tạo Hồ Sơ"):
                 if n and asn: 
                     add_job(n, p, a, proc, f, user, asn, d, is_sv, dep_ok, fee_val)
@@ -693,7 +629,7 @@ else:
             st.divider()
             if not final_res.empty:
                 st.success(f"Tìm thấy {len(final_res)} hồ sơ phù hợp.")
-                for i, j in final_res.iterrows(): render_job_card(j, user, role)
+                for i, j in final_res.iterrows(): render_job_card(j, user, role, user_list)
             else: st.warning("Không tìm thấy hồ sơ nào.")
         elif active_df.empty: st.info("Chưa có dữ liệu.")
 
@@ -758,15 +694,7 @@ else:
             if trash_df.empty: st.success("Thùng rác trống!")
             else:
                 for i, j in trash_df.iterrows():
-                    proc_name = extract_proc_from_log(j['logs'])
-                    code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
-                    with st.expander(f"❌ {code_display}"):
-                        st.write(f"Ngày xóa: {j['logs'].splitlines()[-1] if j['logs'] else 'N/A'}")
-                        c1, c2 = st.columns(2)
-                        if c1.button("♻️ Khôi phục", key=f"rest_{j['id']}"):
-                            restore_from_trash(j['id'], user); time.sleep(1); st.rerun()
-                        if c2.button("🔥 Xóa vĩnh viễn", key=f"del_forever_{j['id']}"):
-                            delete_forever(j['id'], user); time.sleep(1); st.rerun()
+                    render_job_card(j, user, role, user_list)
         else: st.error("Cấm truy cập!")
 
     elif sel == "🛡️ Nhật Ký":
@@ -779,4 +707,3 @@ else:
                 st.dataframe(audit_df, use_container_width=True)
             else: st.error("Không kết nối được nhật ký.")
         else: st.error("Cấm truy cập!")
-
