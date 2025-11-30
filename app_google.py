@@ -21,7 +21,9 @@ DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy"
 
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
 STAGES_ORDER = ["1. Tạo mới", "2. Đo đạc", "3. Hoàn thiện trích đo", "4. Làm hồ sơ", "5. Ký hồ sơ", "6. Lấy hồ sơ", "7. Nộp hồ sơ", "8. Hoàn thành"]
-PROCEDURES_LIST = ["Cấp lần đầu", "Cấp đổi", "Chuyển quyền", "Tách thửa", "Cung cấp thông tin", "Đính chính"]
+
+# [CẬP NHẬT] THÊM THỦ TỤC THỪA KẾ
+PROCEDURES_LIST = ["Cấp lần đầu", "Cấp đổi", "Chuyển quyền", "Tách thửa", "Thừa kế", "Cung cấp thông tin", "Đính chính"]
 
 WORKFLOW_FULL = {
     "1. Tạo mới": "2. Đo đạc", 
@@ -51,8 +53,13 @@ def safe_int(value):
     try: return int(float(str(value).replace(",", "").replace(".", ""))) if pd.notna(value) and value != "" else 0
     except: return 0
 
+# [CẬP NHẬT] VIẾT TẮT CHO THỪA KẾ
 def get_proc_abbr(proc_name):
-    mapping = {"Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ", "Tách thửa": "TT", "Cung cấp thông tin": "CCTT", "Đính chính": "DC"}
+    mapping = {
+        "Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ", 
+        "Tách thửa": "TT", "Thừa kế": "TK", 
+        "Cung cấp thông tin": "CCTT", "Đính chính": "DC"
+    }
     return mapping.get(proc_name, "K")
 
 def extract_proc_from_log(log_text):
@@ -171,7 +178,9 @@ def upload_file_via_script(file_obj, sub_folder_name):
         if response.status_code == 200:
             res_json = response.json()
             if res_json.get("status") == "success": return res_json.get("link"), file_obj.name
-    except: pass
+            else: st.error(f"Lỗi Script: {res_json.get('message')}")
+        else: st.error(f"Lỗi mạng: {response.text}")
+    except Exception as e: st.error(f"Lỗi Upload: {e}")
     return None, None
 
 def find_row_index(sh, jid):
@@ -447,16 +456,6 @@ def delete_forever(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r: sh.delete_rows(r); log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}"); st.toast("Đã xóa vĩnh viễn!")
 
-def scan_bottlenecks(df):
-    bottlenecks = []
-    for _, j in df.iterrows():
-        is_stuck, hours, limit = check_bottleneck(j['deadline'], j['current_stage'])
-        if is_stuck and j['status'] == "Đang xử lý":
-            proc_name = extract_proc_from_log(j['logs'])
-            name = generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", proc_name)
-            bottlenecks.append(f"⚠️ **{name}**\n- Kẹt ở: {j['current_stage']}\n- Thời gian: {hours}h (Giới hạn: {limit}h)")
-    return bottlenecks
-
 # --- UI COMPONENTS & RENDER ---
 def render_progress_bar(current_stage, status):
     try: idx = STAGES_ORDER.index(current_stage)
@@ -521,6 +520,8 @@ def render_job_card(j, user, role, user_list, is_trash=False):
         else:
              icon = "🟢"; dl_status = f"Còn {format_precise_time(time_left)}"
         time_info = f"📅 **Hạn: {dl_str}** | Trạng thái: **{dl_status}**"
+    
+    if j['current_stage'] == "1. Tạo mới": time_info = ""
 
     elapsed_delta, start_stage_dt = get_processing_duration(j['logs'], j['current_stage'])
     elapsed_str = format_precise_time(elapsed_delta)
@@ -594,6 +595,7 @@ def render_job_card(j, user, role, user_list, is_trash=False):
                 with st.form(f"f{j['id']}"):
                     nt = st.text_area("Ghi chú")
                     fl = st.file_uploader("Upload File", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
+                    
                     cur = j['current_stage']; 
                     nxt = get_next_stage_dynamic(cur, proc_name)
                     if not nxt: nxt = "8. Hoàn thành"
@@ -644,7 +646,7 @@ def render_job_card(j, user, role, user_list, is_trash=False):
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
 # --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V28.1", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V29.1", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
@@ -732,15 +734,12 @@ else:
 
     elif sel == "📝 Tạo Hồ Sơ":
         st.title("Tạo Hồ Sơ")
-        # [FIX] Bỏ st.form để input hoạt động ngay
-        c1, c2 = st.columns(2); n = st.text_input("Tên Khách Hàng"); p = st.text_input("SĐT")
-        a = st.text_input("Địa chỉ")
+        # Bỏ Form để update UI ngay
+        c1, c2 = st.columns(2); n = c1.text_input("Tên Khách Hàng"); p = c2.text_input("SĐT"); a = st.text_input("Địa chỉ")
         c3, c4 = st.columns([1, 1]); 
         with c3: is_sv = st.checkbox("🛠️ CHỈ ĐO ĐẠC")
         with c4: proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
-        
         st.markdown("---")
-        # [FIX UI HẸN GIỜ]
         cols_sch = st.columns([0.4, 0.6])
         with cols_sch[0]: is_scheduled = st.checkbox("📅 Hẹn ngày đo sau")
         sch_date = None
@@ -752,7 +751,6 @@ else:
         f = st.file_uploader("File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"new_up_{st.session_state['uploader_key']}")
         st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
         asn = st.selectbox("Giao:", user_list)
-        
         if st.button("Tạo Hồ Sơ", type="primary"):
             if n and asn: add_job(n, p, a, proc, f, user, asn, is_sv, dep_ok, fee_val, sch_date); st.session_state['uploader_key'] += 1; st.success("OK! Hồ sơ mới đã tạo."); st.rerun()
             else: st.error("Thiếu thông tin!")
@@ -811,15 +809,19 @@ else:
                         count = stage_counts.get(stage, 0)
                         if count > 0: pct = (count / total_jobs); c_lab, c_bar = st.columns([1, 3]); c_lab.write(f"**{stage}**: {count} ({int(pct*100)}%)"); c_bar.progress(pct)
             with tab2:
-                st.subheader("🏆 Hiệu Suất Nhân Viên"); emp_stats = []
-                running_jobs = active_df[~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
-                if not running_jobs.empty:
-                    for u in user_list:
-                        u_jobs = running_jobs[running_jobs['assigned_to'] == u]; row = {"Nhân viên": u, "TỔNG ĐANG LÀM": len(u_jobs)}
-                        for stage in STAGES_ORDER: count = len(u_jobs[u_jobs['current_stage'] == stage]); row[stage] = count if count > 0 else "-"
-                        emp_stats.append(row)
-                    st.dataframe(pd.DataFrame(emp_stats), use_container_width=True)
-                else: st.info("Hiện không có hồ sơ nào đang xử lý.")
+                st.subheader("🏆 Hiệu Suất Nhân Viên")
+                # MATRIX KPI
+                matrix_data = []
+                for u in user_list:
+                    u_jobs = active_df[(active_df['assigned_to'] == u) & (~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))]
+                    row = {"Nhân viên": u}
+                    for stage in STAGES_ORDER:
+                        count = len(u_jobs[u_jobs['current_stage'] == stage])
+                        row[stage] = count if count > 0 else "-"
+                    row["TỔNG ĐANG LÀM"] = len(u_jobs)
+                    matrix_data.append(row)
+                st.dataframe(pd.DataFrame(matrix_data), use_container_width=True)
+
             with tab3:
                 st.subheader("⚠️ Hồ Sơ Đang Bị Kẹt"); stuck_df = []
                 running_jobs = active_df[~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
