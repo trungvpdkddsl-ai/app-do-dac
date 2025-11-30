@@ -26,7 +26,17 @@ WORKFLOW_DEFAULT = {
     "1. Tạo mới": "2. Đo đạc", "2. Đo đạc": "3. Hoàn thiện trích đo", "3. Hoàn thiện trích đo": "4. Làm hồ sơ",
     "4. Làm hồ sơ": "5. Ký hồ sơ", "5. Ký hồ sơ": "6. Lấy hồ sơ", "6. Lấy hồ sơ": "7. Nộp hồ sơ", "7. Nộp hồ sơ": "8. Hoàn thành", "8. Hoàn thành": None
 }
-STAGE_SLA_HOURS = {"1. Tạo mới": 0, "2. Đo đạc": 48, "3. Hoàn thiện trích đo": 24, "4. Làm hồ sơ": 24, "5. Ký hồ sơ": 72, "6. Lấy hồ sơ": 24, "7. Nộp hồ sơ": 360}
+
+# [CẬP NHẬT] SLA CHUẨN (Đo đạc = 24h)
+STAGE_SLA_HOURS = {
+    "1. Tạo mới": 0,       
+    "2. Đo đạc": 24,       # [ĐÃ SỬA] 24h
+    "3. Hoàn thiện trích đo": 24, # [ĐÃ SỬA] 24h
+    "4. Làm hồ sơ": 24,    
+    "5. Ký hồ sơ": 72,     
+    "6. Lấy hồ sơ": 24,    
+    "7. Nộp hồ sơ": 360,   
+}
 
 # --- 2. HÀM HỖ TRỢ GIAO DIỆN ---
 def render_progress_bar(current_stage, status):
@@ -284,6 +294,7 @@ def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount):
     log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{log_file_str}"
     asn_clean = asn.split(" - ")[0] if asn else ""
     sv_flag = 1 if is_survey else 0; dep_flag = 1 if deposit_ok else 0
+    # DL bước tạo mới = 0 (Không tính) hoặc set xa để không báo đỏ
     dl = (now + timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S")
     sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
@@ -413,7 +424,7 @@ def scan_bottlenecks(df):
             bottlenecks.append(f"⚠️ **{name}**\n- Kẹt ở: {j['current_stage']}\n- Thời gian: {hours}h (Giới hạn: {limit}h)")
     return bottlenecks
 
-# --- RENDER JOB CARD ---
+# --- UI & MENU ---
 def render_job_card(j, user, role, user_list):
     proc_name = extract_proc_from_log(j['logs'])
     code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
@@ -441,7 +452,6 @@ def render_job_card(j, user, role, user_list):
         t1, t2, t3, t4 = st.tabs(["ℹ️ Thông tin & File", "⚙️ Xử lý Hồ sơ", "💰 Tài Chính", "📜 Nhật ký"])
         with t1:
             st.subheader(f"👤 {j['customer_name']}")
-            # [FIX DUPLICATE ID]: Thêm key unique cho các input trong popover
             if role == "Quản lý":
                 with st.popover("✏️ Sửa Thông Tin"):
                     new_n = st.text_input("Tên", j['customer_name'], key=f"edit_name_{j['id']}")
@@ -449,7 +459,6 @@ def render_job_card(j, user, role, user_list):
                     new_a = st.text_input("Địa chỉ", j['address'], key=f"edit_addr_{j['id']}")
                     if st.button("Lưu Thay Đổi", key=f"save_edit_{j['id']}"):
                         update_customer_info(j['id'], new_n, new_p, new_a, user); time.sleep(1); st.rerun()
-
             if safe_int(j.get('is_survey_only')) == 1: st.warning("🛠️ CHỈ ĐO ĐẠC")
             if proc_name: st.info(f"Thủ tục: {proc_name}")
             st.markdown(render_contact_buttons(j['customer_phone']), unsafe_allow_html=True)
@@ -531,7 +540,7 @@ def render_job_card(j, user, role, user_list):
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
 # --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V23.4", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V23.5", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
@@ -709,16 +718,15 @@ else:
             st.title("Phân Quyền"); df = get_all_users()
             for i, u in df.iterrows():
                 with st.container(border=True):
-                    c1, c2, c3 = st.columns([0.6, 0.3, 0.1])
+                    c1, c2 = st.columns([0.7, 0.3])
                     with c1: st.subheader(f"👤 {u['fullname']}"); st.caption(f"User: {u['username']}")
                     with c2:
                         if u['username']!=user:
-                            idx = ROLES.index(u['role']) if u['role'] in ROLES else 2; nr = st.selectbox("", ROLES, index=idx, key=u['username'], label_visibility="collapsed")
+                            idx = ROLES.index(u['role']) if u['role'] in ROLES else 2
+                            nr = st.selectbox("", ROLES, index=idx, key=u['username'], label_visibility="collapsed")
                             if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Đã lưu!"); time.sleep(0.5); st.rerun()
+                            if st.button("🗑️ Xóa", key=f"del_u_{u['username']}"): delete_user_permanently(u['username']); st.rerun()
                         else: st.info("Admin")
-                    with c3:
-                        if u['username']!=user:
-                            if st.button("🗑️", key=f"del_u_{u['username']}"): delete_user_permanently(u['username']); st.rerun()
         else: st.error("Cấm truy cập!")
 
     elif sel == "🗑️ Thùng Rác":
