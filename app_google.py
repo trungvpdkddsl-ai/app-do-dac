@@ -30,26 +30,15 @@ STAGE_SLA_HOURS = {"1. Tạo mới": 0, "2. Đo đạc": 48, "3. Hoàn thiện t
 
 # --- 2. HÀM HỖ TRỢ & KẾT NỐI ---
 def safe_int(value):
-    try: return int(float(str(value).replace(",", "").replace(".", ""))) if pd.notna(value) and value != "" else 0
+    try:
+        if pd.notna(value) and value != "":
+            return int(float(str(value).replace(",", "").replace(".", "")))
+        return 0
     except: return 0
 
-# [FIX] Đưa hàm này lên đây để tránh lỗi NameError
-def render_progress_bar(current_stage, status):
-    try: idx = STAGES_ORDER.index(current_stage)
-    except: idx = 0
-    color = "#dc3545" if status in ["Tạm dừng", "Kết thúc sớm", "Đã xóa"] else "#ffc107"
-    st.markdown(f"""<style>.step-container {{display: flex; justify-content: space-between; margin-bottom: 15px;}} .step-item {{flex: 1; text-align: center; position: relative;}} .step-item:not(:last-child)::after {{content: ''; position: absolute; top: 15px; left: 50%; width: 100%; height: 2px; background: #e0e0e0; z-index: -1;}} .step-circle {{width: 30px; height: 30px; margin: 0 auto 5px; border-radius: 50%; line-height: 30px; color: white; font-weight: bold; font-size: 12px;}} .done {{background: #28a745;}} .active {{background: {color}; color: black;}} .pending {{background: #e9ecef; color: #999;}}</style>""", unsafe_allow_html=True)
-    h = '<div class="step-container">'; 
-    for i, s in enumerate(STAGES_ORDER):
-        cls = "done" if i < idx else "active" if i == idx else "pending"
-        ico = "✓" if i < idx else str(i+1)
-        if i == idx and status == "Tạm dừng": ico = "⛔"
-        if i == idx and status == "Kết thúc sớm": ico = "⏹️"
-        h += f'<div class="step-item"><div class="step-circle {cls}">{ico}</div><div style="font-size:11px">{s.split(". ")[1]}</div></div>'
-    st.markdown(h+'</div>', unsafe_allow_html=True)
-
 def get_proc_abbr(proc_name):
-    return {"Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ", "Tách thửa": "TT"}.get(proc_name, "K")
+    mapping = {"Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ", "Tách thửa": "TT"}
+    return mapping.get(proc_name, "K")
 
 def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
@@ -70,7 +59,8 @@ def check_bottleneck(logs, current_stage):
 
 def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
     try:
-        jid_str = str(jid); seq = jid_str[-2:] 
+        jid_str = str(jid)
+        seq = jid_str[-2:] 
         d_obj = datetime.strptime(str(start_time), "%Y-%m-%d %H:%M:%S")
         date_str = d_obj.strftime('%d%m%y')
     except: date_str = "000000"; seq = "00"
@@ -91,70 +81,93 @@ def render_contact_buttons(phone):
     if not phone: return ""
     clean_phone = re.sub(r'\D', '', str(phone))
     if len(clean_phone) < 9: return f"<span style='color: gray;'>SĐT: {phone}</span>"
-    zalo_link = f"https://zalo.me/{clean_phone}"; call_link = f"tel:{clean_phone}"
+    zalo_link = f"https://zalo.me/{clean_phone}"
+    call_link = f"tel:{clean_phone}"
     return f"""<div style="display: flex; gap: 10px; margin-bottom: 10px;"><a href="{zalo_link}" target="_blank" style="text-decoration: none;"><div style="background-color: #0068FF; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">💬 Chat Zalo</div></a><a href="{call_link}" style="text-decoration: none;"><div style="background-color: #28a745; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">📞 Gọi Điện</div></a></div>"""
 
 def calculate_deadline(start_date, hours_to_add):
     if hours_to_add == 0: return None
-    current_date = start_date; added_hours = 0
+    current_date = start_date
+    added_hours = 0
     while added_hours < hours_to_add:
         current_date += timedelta(hours=1)
         if current_date.weekday() < 5: added_hours += 1
     return current_date
 
 def get_drive_id(link):
-    try: match = re.search(r'/d/([a-zA-Z0-9_-]+)', link); return match.group(1) if match else None
+    try: 
+        match = re.search(r'/d/([a-zA-Z0-9_-]+)', link)
+        return match.group(1) if match else None
     except: return None
 
 def get_gcp_creds(): 
     return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
 
 def get_sheet(sheet_name="DB_DODAC"):
-    try: creds = get_gcp_creds(); client = gspread.authorize(creds); return client.open(sheet_name).sheet1
+    try: 
+        creds = get_gcp_creds()
+        client = gspread.authorize(creds)
+        return client.open(sheet_name).sheet1
     except: return None
 
 def get_users_sheet():
     try:
-        creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC")
+        creds = get_gcp_creds()
+        client = gspread.authorize(creds)
+        sh = client.open("DB_DODAC")
         try: return sh.worksheet("USERS")
         except: 
             ws = sh.add_worksheet(title="USERS", rows="100", cols="5")
-            ws.append_row(["username", "password", "fullname", "role"]); return ws
+            ws.append_row(["username", "password", "fullname", "role"])
+            return ws
     except: return None
 
 def get_audit_sheet():
     try:
-        creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC")
+        creds = get_gcp_creds()
+        client = gspread.authorize(creds)
+        sh = client.open("DB_DODAC")
         try: return sh.worksheet("AUDIT_LOGS")
         except: 
             ws = sh.add_worksheet(title="AUDIT_LOGS", rows="1000", cols="4")
-            ws.append_row(["Timestamp", "User", "Action", "Details"]); return ws
+            ws.append_row(["Timestamp", "User", "Action", "Details"])
+            return ws
     except: return None
 
 def log_to_audit(user, action, details):
     def _log():
-        try: ws = get_audit_sheet(); ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user, action, details])
+        try: 
+            ws = get_audit_sheet()
+            if ws: ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user, action, details])
         except: pass
     threading.Thread(target=_log).start()
 
 def upload_to_drive(file_obj, sub_folder_name):
     if not file_obj: return None, None
     try:
-        file_content = file_obj.read(); file_base64 = base64.b64encode(file_content).decode('utf-8')
+        file_content = file_obj.read()
+        file_base64 = base64.b64encode(file_content).decode('utf-8')
         payload = {"filename": file_obj.name, "mime_type": file_obj.type, "file_base64": file_base64, "folder_id": DRIVE_FOLDER_ID, "sub_folder_name": sub_folder_name}
         response = requests.post(APPS_SCRIPT_URL, json=payload)
-        if response.status_code == 200 and response.json().get("status") == "success": return response.json().get("link"), file_obj.name
+        if response.status_code == 200:
+            res_json = response.json()
+            if res_json.get("status") == "success": return res_json.get("link"), file_obj.name
     except: pass
     return None, None
 
 def find_row_index(sh, jid):
-    try: ids = sh.col_values(1); return ids.index(str(jid)) + 1
+    try: 
+        ids = sh.col_values(1)
+        return ids.index(str(jid)) + 1
     except: return None
 
 def delete_file_system(job_id, file_link, file_name, user):
     file_id = get_drive_id(file_link)
-    if file_id: requests.post(APPS_SCRIPT_URL, json={"action": "delete", "file_id": file_id})
-    sh = get_sheet(); r = find_row_index(sh, job_id)
+    if file_id:
+        try: requests.post(APPS_SCRIPT_URL, json={"action": "delete", "file_id": file_id})
+        except: pass
+    sh = get_sheet()
+    r = find_row_index(sh, job_id)
     if r:
         current_log = sh.cell(r, 11).value
         new_log = re.sub(r"(\s*\|\s*)?File: .*? - " + re.escape(file_link), "", str(current_log))
@@ -172,23 +185,32 @@ def send_telegram_msg(msg):
     threading.Thread(target=run).start()
 
 def login_user(u, p):
-    sh = get_users_sheet(); 
+    sh = get_users_sheet()
     if not sh: return None
-    try: cell = sh.find(u); row = sh.row_values(cell.row); return row if row[1] == make_hash(p) else None
+    try: 
+        cell = sh.find(u)
+        row = sh.row_values(cell.row)
+        return row if row[1] == make_hash(p) else None
     except: return None
 
 def create_user(u, p, n):
     if not re.match(r'^[a-zA-Z0-9_]+$', u): return False
-    sh = get_users_sheet(); 
+    sh = get_users_sheet()
     if not sh: return False
     try: 
         if sh.find(u): return False
-        sh.append_row([u, make_hash(p), n, "Chưa cấp quyền"]); get_all_users_cached.clear(); return True
+        sh.append_row([u, make_hash(p), n, "Chưa cấp quyền"])
+        get_all_users_cached.clear()
+        return True
     except: return False
 
 def delete_user_permanently(u):
     sh = get_users_sheet()
-    try: cell = sh.find(u); sh.delete_rows(cell.row); get_all_users_cached.clear(); return True
+    try: 
+        cell = sh.find(u)
+        sh.delete_rows(cell.row)
+        get_all_users_cached.clear()
+        return True
     except: return False
 
 @st.cache_data(ttl=60)
@@ -197,16 +219,22 @@ def get_all_users_cached():
     return pd.DataFrame(sh.get_all_records()) if sh else pd.DataFrame()
 
 def get_all_users(): return get_all_users_cached()
-def update_user_role(u, r): sh = get_users_sheet(); c = sh.find(u); sh.update_cell(c.row, 4, r); get_all_users_cached.clear()
+def update_user_role(u, r): 
+    sh = get_users_sheet()
+    c = sh.find(u)
+    sh.update_cell(c.row, 4, r)
+    get_all_users_cached.clear()
+
 def get_active_users_list(): 
     df = get_all_users_cached()
     if df.empty: return []
     return df[df['role']!='Chưa cấp quyền'].apply(lambda x: f"{x['username']} - {x['fullname']}", axis=1).tolist()
 
 def get_all_jobs_df():
-    sh = get_sheet(); 
+    sh = get_sheet()
     if sh is None: return pd.DataFrame()
-    data = sh.get_all_records(); df = pd.DataFrame(data)
+    data = sh.get_all_records()
+    df = pd.DataFrame(data)
     if not df.empty:
         df['id'] = df['id'].apply(safe_int)
         if 'deposit' not in df.columns: df['deposit'] = 0
@@ -217,14 +245,15 @@ def get_all_jobs_df():
     return df
 
 def get_daily_sequence_id():
-    df = get_all_jobs_df(); now = datetime.now(); prefix = int(now.strftime('%y%m%d')) 
+    df = get_all_jobs_df()
+    now = datetime.now()
+    prefix = int(now.strftime('%y%m%d')) 
     if df.empty: return int(f"{prefix}01"), "01"
     today_ids = [str(jid) for jid in df['id'].tolist() if str(jid).startswith(str(prefix))]
     if not today_ids: seq = 1
     else: max_seq = max([int(jid[-2:]) for jid in today_ids]); seq = max_seq + 1
     return int(f"{prefix}{seq:02}"), f"{seq:02}"
 
-# --- BACKGROUND SCHEDULER ---
 def run_schedule_check():
     while True:
         now = datetime.now()
@@ -285,7 +314,7 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
         log_file_str = ""
         if f_list:
             for uploaded_file in f_list:
-                l, n_f = upload_to_drive(uploaded_file, full_code); 
+                l, n_f = upload_to_drive(uploaded_file, full_code)
                 if l: log_file_str += f" | File: {n_f} - {l}"
         nxt = "8. Hoàn thành" if is_survey==1 and stg=="4. Làm hồ sơ" else WORKFLOW_DEFAULT.get(stg)
         if nxt:
@@ -351,7 +380,8 @@ def pause_job(jid, rs, u):
     if r:
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
-        sh.update_cell(r, 7, "Tạm dừng"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
+        sh.update_cell(r, 7, "Tạm dừng")
+        olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
         log_to_audit(u, "PAUSE_JOB", f"ID: {jid}")
         send_telegram_msg(f"⛔ <b>TẠM DỪNG</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
@@ -360,7 +390,8 @@ def resume_job(jid, u):
     if r:
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
-        sh.update_cell(r, 7, "Đang xử lý"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
+        sh.update_cell(r, 7, "Đang xử lý")
+        olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
         log_to_audit(u, "RESUME_JOB", f"ID: {jid}")
         send_telegram_msg(f"▶️ <b>KHÔI PHỤC</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}")
 
@@ -369,7 +400,8 @@ def terminate_job(jid, rs, u):
     if r:
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
-        sh.update_cell(r, 7, "Kết thúc sớm"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
+        sh.update_cell(r, 7, "Kết thúc sớm")
+        olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
         log_to_audit(u, "TERMINATE_JOB", f"ID: {jid}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
@@ -530,7 +562,7 @@ def render_job_card(j, user, role, user_list):
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
 # --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V23.1", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V23.2", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
@@ -708,14 +740,17 @@ else:
             st.title("Phân Quyền"); df = get_all_users()
             for i, u in df.iterrows():
                 with st.container(border=True):
-                    c1, c2 = st.columns([0.7, 0.3]); with c1: st.subheader(f"👤 {u['fullname']}"); st.caption(f"User: {u['username']}")
+                    c1, c2 = st.columns([0.7, 0.3])
+                    with c1:
+                        st.subheader(f"👤 {u['fullname']}")
+                        st.caption(f"User: {u['username']}")
                     with c2:
                         if u['username']!=user:
-                            idx = ROLES.index(u['role']) if u['role'] in ROLES else 2; nr = st.selectbox("", ROLES, index=idx, key=u['username'], label_visibility="collapsed")
+                            idx = ROLES.index(u['role']) if u['role'] in ROLES else 2
+                            nr = st.selectbox("", ROLES, index=idx, key=u['username'], label_visibility="collapsed")
                             if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Đã lưu!"); time.sleep(0.5); st.rerun()
+                            if st.button("🗑️ Xóa", key=f"del_u_{u['username']}"): delete_user_permanently(u['username']); st.rerun()
                         else: st.info("Admin")
-                    if u['username']!=user:
-                        if st.button("🗑️ Xóa", key=f"del_u_{u['username']}"): delete_user_permanently(u['username']); st.rerun()
         else: st.error("Cấm truy cập!")
 
     elif sel == "🗑️ Thùng Rác":
