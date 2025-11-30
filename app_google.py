@@ -63,16 +63,15 @@ def get_next_stage_dynamic(current_stage, proc_name):
     if proc_name in ["Cung cấp thông tin", "Đính chính"]: return WORKFLOW_SHORT.get(current_stage)
     return WORKFLOW_FULL.get(current_stage)
 
-def check_bottleneck(logs, current_stage):
-    if current_stage == "8. Hoàn thành" or not logs: return False, 0, 0
-    limit = STAGE_SLA_HOURS.get(current_stage, 0)
-    if limit == 0: return False, 0, 0
+def check_bottleneck(deadline_str, current_stage):
+    if current_stage == "8. Hoàn thành" or not deadline_str: return False, 0, 0
     try:
-        matches = re.findall(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', str(logs))
-        if matches:
-            last_dt = datetime.strptime(matches[-1], "%Y-%m-%d %H:%M:%S")
-            hours_passed = int((datetime.now() - last_dt).total_seconds() / 3600)
-            return hours_passed >= limit, hours_passed, limit
+        dl_dt = pd.to_datetime(deadline_str)
+        now = datetime.now()
+        if now > dl_dt: # Đã quá hạn
+            overdue_hours = int((now - dl_dt).total_seconds() / 3600)
+            limit = STAGE_SLA_HOURS.get(current_stage, 24)
+            return True, overdue_hours, limit
     except: pass
     return False, 0, 0
 
@@ -106,7 +105,8 @@ def format_precise_time(td):
     if days > 0: parts.append(f"{days} ngày")
     if hours > 0: parts.append(f"{hours} giờ")
     parts.append(f"{minutes} phút")
-    return f"{sign}{' '.join(parts)}" if parts else "0 phút"
+    if not parts: return "0 phút"
+    return f"{sign}{' '.join(parts)}"
 
 def get_processing_duration(logs, current_stage):
     if current_stage == "8. Hoàn thành" or not logs: return timedelta(0), None
@@ -130,7 +130,7 @@ def calculate_deadline(start_date, hours_to_add):
     current_date = start_date; added_hours = 0
     while added_hours < hours_to_add:
         current_date += timedelta(hours=1)
-        if current_date.weekday() < 5: added_hours += 1
+        if current_date.weekday() < 5: added_hours += 1 # T2-T6
     return current_date
 
 def get_drive_id(link):
@@ -162,6 +162,7 @@ def get_audit_sheet():
             ws.append_row(["Timestamp", "User", "Action", "Details"]); return ws
     except: return None
 
+# [HÀM UPLOAD DUY NHẤT - CHẠY QUA APPS SCRIPT]
 def upload_file_via_script(file_obj, sub_folder_name):
     if not file_obj: return None, None
     try:
@@ -172,7 +173,9 @@ def upload_file_via_script(file_obj, sub_folder_name):
         if response.status_code == 200:
             res_json = response.json()
             if res_json.get("status") == "success": return res_json.get("link"), file_obj.name
-    except: pass
+            else: st.error(f"Lỗi Script: {res_json.get('message')}")
+        else: st.error(f"Lỗi mạng: {response.text}")
+    except Exception as e: st.error(f"Lỗi Upload: {e}")
     return None, None
 
 def find_row_index(sh, jid):
@@ -290,11 +293,15 @@ def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount, schedul
     jid, seq_str = get_daily_sequence_id()
     phone_db = f"'{p}" 
     full_name_str = generate_unique_name(jid, now_str, n, p, a, proc)
+    
+    # Upload File
     link = ""; fname = ""; log_file_str = ""
     if f: 
-        for uploaded_file in f:
-            l, n_f = upload_file_via_script(uploaded_file, full_name_str)
-            if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
+        with st.status("Đang khởi tạo hồ sơ và upload file...") as status:
+            for uploaded_file in f:
+                l, n_f = upload_file_via_script(uploaded_file, full_name_str)
+                if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
+            status.update(label="Hoàn tất!", state="complete", expanded=False)
 
     schedule_note = ""
     if scheduled_date:
@@ -304,7 +311,7 @@ def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount, schedul
         dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
         schedule_note = f" (Hẹn đo: {scheduled_date.strftime('%d/%m/%Y')})"
     else:
-        # [FIX] Mặc định tạo mới (bước 1) không có deadline, hoặc deadline rất xa để không báo đỏ
+        # Mặc định tạo mới (bước 1) không có deadline (hoặc xa)
         dl_dt = now + timedelta(days=365) 
         dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -332,9 +339,11 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_file_str = ""
         if f_list:
-            for uploaded_file in f_list:
-                l, n_f = upload_file_via_script(uploaded_file, full_code); 
-                if l: log_file_str += f" | File: {n_f} - {l}"
+             with st.status("Đang cập nhật và upload file...") as status:
+                for uploaded_file in f_list:
+                    l, n_f = upload_file_via_script(uploaded_file, full_code); 
+                    if l: log_file_str += f" | File: {n_f} - {l}"
+                status.update(label="Xong!", state="complete", expanded=False)
         
         nxt = get_next_stage_dynamic(stg, proc_name)
         if not nxt: nxt = "8. Hoàn thành"
@@ -370,17 +379,14 @@ def return_to_previous_stage(jid, current_stage, reason, u):
             curr_idx = STAGES_ORDER.index(current_stage)
             row_data = sh.row_values(r)
             proc_name = extract_proc_from_log(row_data[10])
-            
             prev_stage = None
             temp_idx = curr_idx - 1
             while temp_idx >= 0:
                 candidate = STAGES_ORDER[temp_idx]
                 if proc_name in ["Cung cấp thông tin", "Đính chính"]:
                      if candidate in ["2. Đo đạc", "3. Hoàn thiện trích đo"]:
-                         temp_idx -= 1
-                         continue
-                prev_stage = candidate
-                break
+                         temp_idx -= 1; continue
+                prev_stage = candidate; break
 
             if prev_stage:
                 sh.update_cell(r, 6, prev_stage)
@@ -455,11 +461,11 @@ def delete_forever(jid, u):
 def scan_bottlenecks(df):
     bottlenecks = []
     for _, j in df.iterrows():
-        is_stuck, hours, limit = check_bottleneck(j['logs'], j['current_stage'])
+        is_stuck, hours, limit = check_bottleneck(j['deadline'], j['current_stage']) # Use deadline check
         if is_stuck and j['status'] == "Đang xử lý":
             proc_name = extract_proc_from_log(j['logs'])
             name = generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", proc_name)
-            bottlenecks.append(f"⚠️ **{name}**\n- Kẹt ở: {j['current_stage']}\n- Thời gian: {hours}h (Giới hạn: {limit}h)")
+            bottlenecks.append(f"⚠️ **{name}**\n- Kẹt ở: {j['current_stage']}\n- Quá hạn: {hours}h")
     return bottlenecks
 
 # --- UI COMPONENTS & RENDER ---
@@ -513,19 +519,23 @@ def render_job_card(j, user, role, user_list):
     dl_str = dl_dt.strftime("%d/%m/%Y %H:%M")
     time_left = dl_dt - now
     
-    if j['current_stage'] in ["1. Tạo mới", "8. Hoàn thành"]: icon = "🟢"; time_info = ""
+    # [FIX] Màu sắc bước 1. Tạo mới -> Xanh dương, Không báo hạn
+    if j['current_stage'] == "1. Tạo mới":
+        icon = "🔵"
+        dl_status = "Đang chờ xử lý"
+    elif j['status'] in ['Tạm dừng', 'Kết thúc sớm', 'Đã xóa']:
+        icon = "⛔"; dl_status = j['status']
+    elif 'Hẹn đo:' in str(j['logs']) and time_left.days > 1:
+        icon = "⚪"; dl_status = f"⏳ CHỜ ĐẾN HẸN (Hạn: {dl_str})"
+    elif time_left.total_seconds() < 0:
+        icon = "🔴"; dl_status = f"QUÁ HẠN {format_precise_time(time_left)}"
+    elif time_left.total_seconds() < 172800: 
+        icon = "🟡"; dl_status = f"Còn {format_precise_time(time_left)}"
     else:
-        if j['status'] in ['Tạm dừng', 'Kết thúc sớm', 'Đã xóa']:
-             icon = "⛔"; dl_status = j['status']
-        elif 'Hẹn đo:' in str(j['logs']) and time_left.days > 1:
-             icon = "⚪"; dl_status = f"⏳ CHỜ ĐẾN HẸN (Hạn: {dl_str})"
-        elif time_left.total_seconds() < 0:
-             icon = "🔴"; dl_status = f"QUÁ HẠN {format_precise_time(time_left)}"
-        elif time_left.total_seconds() < 172800: 
-             icon = "🟡"; dl_status = f"Còn {format_precise_time(time_left)}"
-        else:
-             icon = "🟢"; dl_status = f"Còn {format_precise_time(time_left)}"
-        time_info = f"📅 **Hạn: {dl_str}** | Trạng thái: **{dl_status}**"
+        icon = "🟢"; dl_status = f"Còn {format_precise_time(time_left)}"
+    
+    time_info = f"📅 **Hạn: {dl_str}** | Trạng thái: **{dl_status}**"
+    if j['current_stage'] == "1. Tạo mới": time_info = "" # Ẩn hạn nếu là tạo mới
 
     elapsed_delta, start_stage_dt = get_processing_duration(j['logs'], j['current_stage'])
     elapsed_str = format_precise_time(elapsed_delta)
@@ -588,7 +598,7 @@ def render_job_card(j, user, role, user_list):
             else:
                 with st.form(f"f{j['id']}"):
                     nt = st.text_area("Ghi chú")
-                    fl = st.file_uploader("Upload File", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
+                    fl = st.file_uploader("Upload File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
                     cur = j['current_stage']; 
                     # [FIX] Lấy bước tiếp theo động
                     nxt = get_next_stage_dynamic(cur, proc_name)
@@ -740,6 +750,7 @@ else:
             if is_scheduled:
                 sch_date = st.date_input("Ngày khách hẹn đi đo", datetime.now() + timedelta(days=1))
                 st.info(f"Hồ sơ sẽ ở trạng thái chờ. Quy trình 24h sẽ bắt đầu tính từ ngày {sch_date.strftime('%d/%m/%Y')}.")
+            
             f = st.file_uploader("File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"new_up_{st.session_state['uploader_key']}")
             st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
             asn = st.selectbox("Giao:", user_list)
