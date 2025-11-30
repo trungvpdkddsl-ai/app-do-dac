@@ -133,19 +133,15 @@ def get_drive_id(link):
     try: match = re.search(r'/d/([a-zA-Z0-9_-]+)', link); return match.group(1) if match else None
     except: return None
 
-# --- [FIX] HÀM QUÉT HỒ SƠ CHẬM (SỬA LỖI NAME ERROR) ---
+# --- HÀM QUÉT HỒ SƠ CHẬM ---
 def scan_bottlenecks(df):
     issues = []
     now = datetime.now()
-    # Chỉ quét hồ sơ đang chạy, bỏ qua hồ sơ Đã xóa/Hoàn thành/Tạm dừng/Kết thúc
     running_df = df[~df['status'].isin(['Đã xóa', 'Hoàn thành', 'Kết thúc sớm', 'Tạm dừng'])]
-    
     for _, row in running_df.iterrows():
         try:
             dl_dt = pd.to_datetime(row['deadline'], errors='coerce')
             if pd.isna(dl_dt): continue
-            
-            # Logic: Quá hạn HOẶC còn dưới 24h
             if now > dl_dt:
                 overdue_time = format_precise_time(now - dl_dt)
                 issues.append(f"🔴 QUÁ HẠN ({overdue_time}): {row['customer_name']} - Đang ở: {row['current_stage']}")
@@ -513,7 +509,7 @@ def render_square_menu(role):
             st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
             st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
 
-# --- [UPDATE] RENDER JOB CARD VỚI CẢNH BÁO ---
+# --- [FIXED] RENDER JOB CARD VỚI CẢNH BÁO, BỘ ĐẾM & NGƯỜI LÀM ---
 def render_job_card(j, user, role, user_list, is_trash=False):
     proc_name = extract_proc_from_log(j['logs'])
     code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
@@ -522,6 +518,10 @@ def render_job_card(j, user, role, user_list, is_trash=False):
     except: dl_dt = now + timedelta(days=365)
     time_left = dl_dt - now
     
+    # Lấy tên người được giao việc
+    assignee = j.get('assigned_to', 'Chưa giao')
+    assignee_short = assignee.split(' - ')[0] if assignee else "Chưa giao"
+
     alert_suffix = "" 
     if j['current_stage'] in ["1. Tạo mới", "8. Hoàn thành"]: icon = "🟢"
     elif j['status'] == "Tạm dừng":
@@ -537,7 +537,9 @@ def render_job_card(j, user, role, user_list, is_trash=False):
         else: icon = "🟢"
             
     if is_trash: label = f"❌ {code_display}"
-    else: label = f"{icon} {code_display} | {j['current_stage']}{alert_suffix}"
+    else: 
+        # Hiển thị: [Icon] [Mã] | [Bước] - [Người làm] [Cảnh báo]
+        label = f"{icon} {code_display} | {j['current_stage']} - {assignee_short}{alert_suffix}"
 
     with st.expander(label):
         if is_trash:
@@ -553,9 +555,19 @@ def render_job_card(j, user, role, user_list, is_trash=False):
         dl_str_view = dl_dt.strftime("%d/%m/%Y %H:%M")
 
         if j['status'] == "Tạm dừng": st.error(f"⚠️ HỒ SƠ ĐANG TẠM DỪNG. Lý do xem trong nhật ký.")
-        elif time_left.total_seconds() < 0: st.error(f"📅 Hạn chót: {dl_str_view} (Đã quá hạn)")
-        elif time_left.total_seconds() < 86400: st.warning(f"📅 Hạn chót: {dl_str_view} (Sắp hết)")
-        else: st.info(f"📅 Hạn chót: {dl_str_view}")
+        elif time_left.total_seconds() < 0: 
+            st.error(f"📅 Hạn chót: {dl_str_view} (Đã quá hạn)")
+        elif time_left.total_seconds() < 86400: 
+            st.warning(f"📅 Hạn chót: {dl_str_view} (Sắp hết)")
+        else: 
+            st.info(f"📅 Hạn chót: {dl_str_view}")
+
+        # [FIX] THÊM BỘ ĐẾM THỜI GIAN CÒN LẠI
+        if j['status'] not in ["Tạm dừng", "Hoàn thành", "Kết thúc sớm", "Đã xóa"]:
+            if time_left.total_seconds() > 0:
+                st.info(f"⏳ **Thời gian còn lại:** {format_precise_time(time_left)}")
+            else:
+                st.error(f"⚠️ **Trễ hạn:** {format_precise_time(abs(time_left))}")
 
         render_progress_bar(j['current_stage'], j['status'])
         t1, t2, t3, t4 = st.tabs(["ℹ️ Thông tin & File", "⚙️ Xử lý Hồ sơ", "💰 Tài Chính", "📜 Nhật ký"])
@@ -719,6 +731,7 @@ else:
                 my_df = active_df[~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
             
             now = datetime.now()
+            # [FIX] Ép kiểu datetime chặt chẽ hơn để bộ lọc hoạt động đúng
             my_df['dl_dt'] = pd.to_datetime(my_df['deadline'], errors='coerce')
             my_df['dl_dt'] = my_df['dl_dt'].fillna(now + timedelta(days=365))
             
