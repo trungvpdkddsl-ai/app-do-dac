@@ -468,7 +468,7 @@ def render_progress_bar(current_stage, status):
     except: idx = 0
     color = "#dc3545" if status in ["Tạm dừng", "Kết thúc sớm", "Đã xóa"] else "#ffc107"
     st.markdown(f"""<style>.step-container {{display: flex; justify-content: space-between; margin-bottom: 15px;}} .step-item {{flex: 1; text-align: center; position: relative;}} .step-item:not(:last-child)::after {{content: ''; position: absolute; top: 15px; left: 50%; width: 100%; height: 2px; background: #e0e0e0; z-index: -1;}} .step-circle {{width: 30px; height: 30px; margin: 0 auto 5px; border-radius: 50%; line-height: 30px; color: white; font-weight: bold; font-size: 12px;}} .done {{background: #28a745;}} .active {{background: {color}; color: black;}} .pending {{background: #e9ecef; color: #999;}}</style>""", unsafe_allow_html=True)
-    h = '<div class="step-container">'; 
+    h = '<div class="step-container">'
     for i, s in enumerate(STAGES_ORDER):
         cls = "done" if i < idx else "active" if i == idx else "pending"
         ico = "✓" if i < idx else str(i+1)
@@ -513,23 +513,19 @@ def render_job_card(j, user, role, user_list):
     dl_str = dl_dt.strftime("%d/%m/%Y %H:%M")
     time_left = dl_dt - now
     
-    # [FIX] Màu sắc bước 1. Tạo mới -> Xanh dương, Không báo hạn
-    if j['current_stage'] == "1. Tạo mới":
-        icon = "🔵"
-        dl_status = "Đang chờ xử lý"
-    elif j['status'] in ['Tạm dừng', 'Kết thúc sớm', 'Đã xóa']:
-        icon = "⛔"; dl_status = j['status']
-    elif 'Hẹn đo:' in str(j['logs']) and time_left.days > 1:
-        icon = "⚪"; dl_status = f"⏳ CHỜ ĐẾN HẸN (Hạn: {dl_str})"
-    elif time_left.total_seconds() < 0:
-        icon = "🔴"; dl_status = f"QUÁ HẠN {format_precise_time(time_left)}"
-    elif time_left.total_seconds() < 172800: 
-        icon = "🟡"; dl_status = f"Còn {format_precise_time(time_left)}"
+    if j['current_stage'] in ["1. Tạo mới", "8. Hoàn thành"]: icon = "🟢"; time_info = ""
     else:
-        icon = "🟢"; dl_status = f"Còn {format_precise_time(time_left)}"
-    
-    time_info = f"📅 **Hạn: {dl_str}** | Trạng thái: **{dl_status}**"
-    if j['current_stage'] == "1. Tạo mới": time_info = "" # Ẩn hạn nếu là tạo mới
+        if j['status'] in ['Tạm dừng', 'Kết thúc sớm', 'Đã xóa']:
+             icon = "⛔"; dl_status = j['status']
+        elif 'Hẹn đo:' in str(j['logs']) and time_left.days > 1:
+             icon = "⚪"; dl_status = f"⏳ CHỜ ĐẾN HẸN (Hạn: {dl_str})"
+        elif time_left.total_seconds() < 0:
+             icon = "🔴"; dl_status = f"QUÁ HẠN {format_precise_time(time_left)}"
+        elif time_left.total_seconds() < 172800: 
+             icon = "🟡"; dl_status = f"Còn {format_precise_time(time_left)}"
+        else:
+             icon = "🟢"; dl_status = f"Còn {format_precise_time(time_left)}"
+        time_info = f"📅 **Hạn: {dl_str}** | Trạng thái: **{dl_status}**"
 
     elapsed_delta, start_stage_dt = get_processing_duration(j['logs'], j['current_stage'])
     elapsed_str = format_precise_time(elapsed_delta)
@@ -644,7 +640,7 @@ def render_job_card(j, user, role, user_list):
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
 # --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V27", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V27.1", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
@@ -738,6 +734,7 @@ else:
             with c3: is_sv = st.checkbox("🛠️ CHỈ ĐO ĐẠC")
             with c4: proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
             st.markdown("---")
+            # [ĐÃ KHÔI PHỤC] Lựa chọn hẹn giờ
             is_scheduled = st.checkbox("📅 Hẹn ngày đo sau (Không tính thời gian ngay)")
             sch_date = None
             if is_scheduled:
@@ -747,7 +744,9 @@ else:
             st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
             asn = st.selectbox("Giao:", user_list)
             if st.form_submit_button("Tạo Hồ Sơ"):
-                if n and asn: add_job(n, p, a, proc, f, user, asn, is_sv, dep_ok, fee_val, sch_date); st.session_state['uploader_key'] += 1; st.success("OK! Hồ sơ mới đã tạo."); st.rerun()
+                if n and asn: 
+                    add_job(n, p, a, proc, f, user, asn, is_sv, dep_ok, fee_val, sch_date)
+                    st.session_state['uploader_key'] += 1; st.success("OK! Hồ sơ mới đã tạo."); st.rerun()
                 else: st.error("Thiếu thông tin!")
 
     elif sel == "💰 Công Nợ":
@@ -829,9 +828,7 @@ else:
             for i, u in df.iterrows():
                 with st.container(border=True):
                     c1, c2, c3 = st.columns([0.6, 0.3, 0.1])
-                    with c1: 
-                        st.subheader(f"👤 {u['fullname']}")
-                        st.caption(f"User: {u['username']}")
+                    with c1: st.subheader(f"👤 {u['fullname']}"); st.caption(f"User: {u['username']}")
                     with c2:
                         if u['username']!=user:
                             idx = ROLES.index(u['role']) if u['role'] in ROLES else 2; nr = st.selectbox("", ROLES, index=idx, key=u['username'], label_visibility="collapsed")
