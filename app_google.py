@@ -21,12 +21,8 @@ DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy"
 
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
 STAGES_ORDER = ["1. Tạo mới", "2. Đo đạc", "3. Hoàn thiện trích đo", "4. Làm hồ sơ", "5. Ký hồ sơ", "6. Lấy hồ sơ", "7. Nộp hồ sơ", "8. Hoàn thành"]
-
-# [CẬP NHẬT] DANH SÁCH THỦ TỤC
 PROCEDURES_LIST = ["Cấp lần đầu", "Cấp đổi", "Chuyển quyền", "Tách thửa", "Cung cấp thông tin", "Đính chính"]
 
-# [MỚI] ĐỊNH NGHĨA 2 LUỒNG QUY TRÌNH
-# 1. Quy trình đầy đủ (Có đo đạc)
 WORKFLOW_FULL = {
     "1. Tạo mới": "2. Đo đạc", 
     "2. Đo đạc": "3. Hoàn thiện trích đo", 
@@ -38,9 +34,8 @@ WORKFLOW_FULL = {
     "8. Hoàn thành": None
 }
 
-# 2. Quy trình rút gọn (Bỏ đo đạc & trích đo) - Dành cho Cung cấp TT & Đính chính
 WORKFLOW_SHORT = {
-    "1. Tạo mới": "4. Làm hồ sơ", # Nhảy cóc
+    "1. Tạo mới": "4. Làm hồ sơ", 
     "4. Làm hồ sơ": "5. Ký hồ sơ", 
     "5. Ký hồ sơ": "6. Lấy hồ sơ", 
     "6. Lấy hồ sơ": "7. Nộp hồ sơ", 
@@ -55,23 +50,16 @@ def safe_int(value):
     try: return int(float(str(value).replace(",", "").replace(".", ""))) if pd.notna(value) and value != "" else 0
     except: return 0
 
-# [CẬP NHẬT] Thêm viết tắt cho thủ tục mới
 def get_proc_abbr(proc_name):
-    mapping = {
-        "Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ", "Tách thửa": "TT",
-        "Cung cấp thông tin": "CCTT", "Đính chính": "DC"
-    }
+    mapping = {"Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ", "Tách thửa": "TT", "Cung cấp thông tin": "CCTT", "Đính chính": "DC"}
     return mapping.get(proc_name, "K")
 
 def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
     return match.group(1) if match else ""
 
-# [MỚI] Hàm xác định bước tiếp theo dựa trên thủ tục
 def get_next_stage_dynamic(current_stage, proc_name):
-    # Các thủ tục không cần đo đạc
-    if proc_name in ["Cung cấp thông tin", "Đính chính"]:
-        return WORKFLOW_SHORT.get(current_stage)
+    if proc_name in ["Cung cấp thông tin", "Đính chính"]: return WORKFLOW_SHORT.get(current_stage)
     return WORKFLOW_FULL.get(current_stage)
 
 def check_bottleneck(logs, current_stage):
@@ -179,14 +167,22 @@ def log_to_audit(user, action, details):
         except: pass
     threading.Thread(target=_log).start()
 
-def upload_to_drive(file_obj, sub_folder_name):
+# [HÀM UPLOAD MỚI ĐỔI TÊN ĐỂ TRÁNH CACHE]
+def upload_file_via_script(file_obj, sub_folder_name):
     if not file_obj: return None, None
     try:
-        file_content = file_obj.read(); file_base64 = base64.b64encode(file_content).decode('utf-8')
+        file_content = file_obj.read()
+        file_base64 = base64.b64encode(file_content).decode('utf-8')
         payload = {"filename": file_obj.name, "mime_type": file_obj.type, "file_base64": file_base64, "folder_id": DRIVE_FOLDER_ID, "sub_folder_name": sub_folder_name}
+        # Gửi request POST tới Apps Script (Bỏ qua quota)
         response = requests.post(APPS_SCRIPT_URL, json=payload)
-        if response.status_code == 200 and response.json().get("status") == "success": return response.json().get("link"), file_obj.name
-    except: pass
+        if response.status_code == 200:
+            res_json = response.json()
+            if res_json.get("status") == "success":
+                return res_json.get("link"), file_obj.name
+            else: st.error(f"Lỗi Script: {res_json.get('message')}")
+        else: st.error(f"Lỗi mạng: {response.text}")
+    except Exception as e: st.error(f"Lỗi: {e}")
     return None, None
 
 def find_row_index(sh, jid):
@@ -301,19 +297,17 @@ def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount, schedul
     link = ""; fname = ""; log_file_str = ""
     if f: 
         for uploaded_file in f:
-            l, n_f = upload_to_drive(uploaded_file, full_name_str)
+            l, n_f = upload_file_via_script(uploaded_file, full_name_str)
             if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
 
     schedule_note = ""
     if scheduled_date:
         start_count_time = datetime.combine(scheduled_date, datetime.min.time()).replace(hour=8)
-        # Tính deadline bước tiếp theo dựa trên thủ tục
         next_step_key = "2. Đo đạc" if proc not in ["Cung cấp thông tin", "Đính chính"] else "4. Làm hồ sơ"
         dl_dt = calculate_deadline(start_count_time, STAGE_SLA_HOURS.get(next_step_key, 24))
         dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
         schedule_note = f" (Hẹn đo: {scheduled_date.strftime('%d/%m/%Y')})"
     else:
-        # [FIX] Nếu là thủ tục rút gọn, bước tiếp theo là 4. Làm hồ sơ, deadline tính theo bước 4
         next_step_key = "2. Đo đạc" if proc not in ["Cung cấp thông tin", "Đính chính"] else "4. Làm hồ sơ"
         dl_dt = calculate_deadline(now, STAGE_SLA_HOURS.get(next_step_key, 24))
         dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -322,6 +316,7 @@ def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount, schedul
     log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{schedule_note}{log_file_str}"
     asn_clean = asn.split(" - ")[0] if asn else ""
     sv_flag = 1 if is_survey else 0; dep_flag = 1 if deposit_ok else 0
+    
     sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
     
@@ -342,12 +337,11 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
         log_file_str = ""
         if f_list:
             for uploaded_file in f_list:
-                l, n_f = upload_to_drive(uploaded_file, full_code); 
+                l, n_f = upload_file_via_script(uploaded_file, full_code); 
                 if l: log_file_str += f" | File: {n_f} - {l}"
         
-        # [FIX] Lấy bước tiếp theo động dựa trên loại thủ tục
         nxt = get_next_stage_dynamic(stg, proc_name)
-        if nxt is None: nxt = "8. Hoàn thành" # Fallback cuối cùng
+        if not nxt: nxt = "8. Hoàn thành"
 
         if nxt:
             sh.update_cell(r, 6, nxt)
@@ -377,13 +371,7 @@ def return_to_previous_stage(jid, current_stage, reason, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
         try:
-            # Tìm vị trí trong list đầy đủ
             curr_idx = STAGES_ORDER.index(current_stage)
-            
-            # Logic lùi bước phức tạp hơn vì có quy trình rút gọn
-            # Đơn giản hóa: Lùi về bước liền trước trong STAGES_ORDER
-            # Nếu lùi về bước không có trong quy trình hiện tại -> Lùi tiếp
-            
             row_data = sh.row_values(r)
             proc_name = extract_proc_from_log(row_data[10])
             
@@ -391,8 +379,6 @@ def return_to_previous_stage(jid, current_stage, reason, u):
             temp_idx = curr_idx - 1
             while temp_idx >= 0:
                 candidate = STAGES_ORDER[temp_idx]
-                # Kiểm tra xem candidate có nằm trong workflow của thủ tục này không
-                # Nếu là Cung cấp TT/DC thì không được lùi về Đo đạc/Trích đo
                 if proc_name in ["Cung cấp thông tin", "Đính chính"]:
                      if candidate in ["2. Đo đạc", "3. Hoàn thiện trích đo"]:
                          temp_idx -= 1
@@ -408,7 +394,6 @@ def return_to_previous_stage(jid, current_stage, reason, u):
                 olog = sh.cell(r, 11).value
                 nlog = f"\n[{datetime.now()}] {u}: ⬅️ TRẢ HỒ SƠ ({current_stage} -> {prev_stage}) | Lý do: {reason}"
                 sh.update_cell(r, 11, olog + nlog)
-                
                 full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], proc_name)
                 log_to_audit(u, "RETURN_JOB", f"ID: {jid}, {current_stage} -> {prev_stage}")
                 send_telegram_msg(f"↩️ <b>TRẢ HỒ SƠ</b>\n📂 <b>{full_code}</b>\n{current_stage} ➡ <b>{prev_stage}</b>\n👤 Bởi: {u}\n⚠️ Lý do: {reason}")
@@ -520,7 +505,6 @@ def render_job_card(j, user, role, user_list):
              icon = "🟢"; dl_status = f"Còn {format_precise_time(time_left)}"
         time_info = f"📅 **Hạn: {dl_str}** | Trạng thái: **{dl_status}**"
 
-    # Hiển thị thời gian thực đã xử lý
     elapsed_delta, start_stage_dt = get_processing_duration(j['logs'], j['current_stage'])
     elapsed_str = format_precise_time(elapsed_delta)
     limit = STAGE_SLA_HOURS.get(j['current_stage'], 0)
@@ -528,7 +512,7 @@ def render_job_card(j, user, role, user_list):
     stuck_alert = ""
     if j['status'] == "Đang xử lý" and j['current_stage'] not in ["1. Tạo mới", "8. Hoàn thành"]:
          if limit > 0 and elapsed_delta.total_seconds() > limit * 3600: stuck_alert = " | ⚠️ KẸT"
-
+    
     with st.expander(f"{icon} {code_display} | {j['current_stage']}{stuck_alert}"):
         if j['status'] == "Đang xử lý" and j['current_stage'] not in ["1. Tạo mới", "8. Hoàn thành"]:
              if limit > 0 and elapsed_delta.total_seconds() > limit * 3600:
@@ -583,11 +567,10 @@ def render_job_card(j, user, role, user_list):
                 with st.form(f"f{j['id']}"):
                     nt = st.text_area("Ghi chú")
                     fl = st.file_uploader("Upload File", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
-                    
-                    # [FIX] Logic chuyển bước thông minh
-                    cur = j['current_stage']
+                    cur = j['current_stage']; 
+                    # [FIX] Lấy bước tiếp theo động
                     nxt = get_next_stage_dynamic(cur, proc_name)
-                    if not nxt: nxt = "8. Hoàn thành" # Fallback
+                    if not nxt: nxt = "8. Hoàn thành"
 
                     result_date = None
                     if nxt and nxt!="8. Hoàn thành":
@@ -635,7 +618,7 @@ def render_job_card(j, user, role, user_list):
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
 # --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V26", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V26.1", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
@@ -738,7 +721,9 @@ else:
             st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
             asn = st.selectbox("Giao:", user_list)
             if st.form_submit_button("Tạo Hồ Sơ"):
-                if n and asn: add_job(n, p, a, proc, f, user, asn, is_sv, dep_ok, fee_val, sch_date); st.session_state['uploader_key'] += 1; st.success("OK! Hồ sơ mới đã tạo."); st.rerun()
+                if n and asn: 
+                    add_job(n, p, a, proc, f, user, asn, is_sv, dep_ok, fee_val, sch_date)
+                    st.session_state['uploader_key'] += 1; st.success("OK! Hồ sơ mới đã tạo."); st.rerun()
                 else: st.error("Thiếu thông tin!")
 
     elif sel == "💰 Công Nợ":
