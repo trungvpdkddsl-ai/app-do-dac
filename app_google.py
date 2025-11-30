@@ -8,6 +8,7 @@ import hashlib
 import re
 import gspread
 import base64
+import io
 from google.oauth2.service_account import Credentials
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
@@ -15,7 +16,7 @@ TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
 TELEGRAM_CHAT_ID = "-5055192262"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
-# KEY KẾT NỐI (Apps Script & Folder ID giữ nguyên)
+# KEY KẾT NỐI
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyEMEGyS_sVCA4eyVRFXxnOuGqMnJOKOIqZqKxi4HpYBcpr7U72WUXCoKLm20BQomVC/exec"
 DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy"
 
@@ -142,10 +143,15 @@ def scan_bottlenecks(df):
         try:
             dl_dt = pd.to_datetime(row['deadline'], errors='coerce')
             if pd.isna(dl_dt): continue
+            
+            # Logic riêng cho bước 7 (Nộp hồ sơ): Báo trước 3 ngày
+            threshold = 72 * 3600 if row['current_stage'] == "7. Nộp hồ sơ" else 24 * 3600
+            time_left = (dl_dt - now).total_seconds()
+            
             if now > dl_dt:
                 overdue_time = format_precise_time(now - dl_dt)
                 issues.append(f"🔴 QUÁ HẠN ({overdue_time}): {row['customer_name']} - Đang ở: {row['current_stage']}")
-            elif now <= dl_dt <= now + timedelta(hours=24):
+            elif 0 <= time_left <= threshold:
                 left_time = format_precise_time(dl_dt - now)
                 issues.append(f"⚠️ SẮP ĐẾN HẠN (Còn {left_time}): {row['customer_name']} - Đang ở: {row['current_stage']}")
         except: continue
@@ -355,8 +361,12 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
                 l, n_f = upload_file_via_script(uploaded_file, full_code); 
                 if l: log_file_str += f" | File: {n_f} - {l}"
         
-        nxt = get_next_stage_dynamic(stg, proc_name)
-        if not nxt: nxt = "8. Hoàn thành"
+        # Nếu nxt được truyền vào (VD từ bước 7) thì dùng luôn, không thì tự tính
+        if nt == "Đã nhận kết quả đúng hạn." or nt == "Đã nhận kết quả sớm.":
+            nxt = "8. Hoàn thành"
+        else:
+            nxt = get_next_stage_dynamic(stg, proc_name)
+            if not nxt: nxt = "8. Hoàn thành"
 
         if nxt:
             sh.update_cell(r, 6, nxt)
@@ -368,12 +378,17 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
                 new_deadline = result_date.strftime("%Y-%m-%d %H:%M:%S")
                 sh.update_cell(r, 9, new_deadline); nt += f" (Hẹn trả: {result_date.strftime('%d/%m/%Y')})"
             else:
-                hours_to_add = STAGE_SLA_HOURS.get(nxt, 24)
-                if hours_to_add > 0:
-                    new_dl = calculate_deadline(datetime.now(), hours_to_add)
-                    sh.update_cell(r, 9, new_dl.strftime("%Y-%m-%d %H:%M:%S"))
+                # Nếu là hoàn thành thì không cần deadline
+                if nxt == "8. Hoàn thành":
+                     pass
                 else:
-                    sh.update_cell(r, 9, (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S"))
+                    hours_to_add = STAGE_SLA_HOURS.get(nxt, 24)
+                    if hours_to_add > 0:
+                        new_dl = calculate_deadline(datetime.now(), hours_to_add)
+                        sh.update_cell(r, 9, new_dl.strftime("%Y-%m-%d %H:%M:%S"))
+                    else:
+                        sh.update_cell(r, 9, (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S"))
+            
             sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
             olog = sh.cell(r, 11).value
             nlog = f"\n[{now}] {u}: {stg}->{nxt}{assign_str} | Note: {nt}{log_file_str}"
@@ -381,6 +396,17 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
             if nxt=="8. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
             log_to_audit(u, "UPDATE_STAGE", f"ID: {jid}, {stg} -> {nxt}")
             send_telegram_msg(f"✅ <b>CẬP NHẬT</b>\n📂 <b>{full_code}</b>\n{stg} ➡ <b>{nxt}</b>\n👤 {u}{assign_tele}")
+
+def update_deadline_custom(jid, new_date, u):
+    sh = get_sheet(); r = find_row_index(sh, jid)
+    if r:
+        new_dl_str = datetime.combine(new_date, datetime.max.time()).strftime("%Y-%m-%d %H:%M:%S")
+        sh.update_cell(r, 9, new_dl_str)
+        olog = sh.cell(r, 11).value
+        nlog = f"\n[{datetime.now()}] {u}: 📅 CẬP NHẬT NGÀY HẸN TRẢ: {new_date.strftime('%d/%m/%Y')}"
+        sh.update_cell(r, 11, olog + nlog)
+        log_to_audit(u, "UPDATE_DEADLINE", f"ID: {jid} -> {new_date}")
+        st.toast("Đã lưu ngày hẹn mới!")
 
 def return_to_previous_stage(jid, current_stage, reason, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
@@ -509,7 +535,6 @@ def render_square_menu(role):
             st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
             st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
 
-# --- [FIXED] RENDER JOB CARD VỚI CẢNH BÁO, BỘ ĐẾM & NGƯỜI LÀM ---
 def render_job_card(j, user, role, user_list, is_trash=False):
     proc_name = extract_proc_from_log(j['logs'])
     code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
@@ -518,28 +543,26 @@ def render_job_card(j, user, role, user_list, is_trash=False):
     except: dl_dt = now + timedelta(days=365)
     time_left = dl_dt - now
     
-    # Lấy tên người được giao việc
     assignee = j.get('assigned_to', 'Chưa giao')
     assignee_short = assignee.split(' - ')[0] if assignee else "Chưa giao"
 
     alert_suffix = "" 
     if j['current_stage'] in ["1. Tạo mới", "8. Hoàn thành"]: icon = "🟢"
-    elif j['status'] == "Tạm dừng":
-        icon = "⛔"; alert_suffix = " (⛔ TẠM DỪNG)"
+    elif j['status'] == "Tạm dừng": icon = "⛔"; alert_suffix = " (⛔ TẠM DỪNG)"
     elif j['status'] == "Kết thúc sớm": icon = "⏹️"
     elif j['status'] == "Đã xóa": icon = "🗑️"
     else:
-        # Logic cảnh báo thời gian
+        # Nếu là bước Nộp hồ sơ thì cảnh báo trước 3 ngày
+        warning_threshold = 72 * 3600 if j['current_stage'] == "7. Nộp hồ sơ" else 24 * 3600
+        
         if time_left.total_seconds() < 0:
             icon = "🔴"; alert_suffix = f" (⛔ QUÁ HẠN {format_precise_time(time_left)})"
-        elif time_left.total_seconds() <= 86400: 
+        elif time_left.total_seconds() <= warning_threshold: 
             icon = "🟡"; alert_suffix = f" (⚠️ SẮP ĐẾN HẠN: Còn {format_precise_time(time_left)})"
         else: icon = "🟢"
             
     if is_trash: label = f"❌ {code_display}"
-    else: 
-        # Hiển thị: [Icon] [Mã] | [Bước] - [Người làm] [Cảnh báo]
-        label = f"{icon} {code_display} | {j['current_stage']} - {assignee_short}{alert_suffix}"
+    else: label = f"{icon} {code_display} | {j['current_stage']} - {assignee_short}{alert_suffix}"
 
     with st.expander(label):
         if is_trash:
@@ -550,19 +573,18 @@ def render_job_card(j, user, role, user_list, is_trash=False):
             return
 
         elapsed_delta, start_stage_dt = get_processing_duration(j['logs'], j['current_stage'])
-        elapsed_str = format_precise_time(elapsed_delta)
-        limit = STAGE_SLA_HOURS.get(j['current_stage'], 0)
-        dl_str_view = dl_dt.strftime("%d/%m/%Y %H:%M")
+        dl_str_view = dl_dt.strftime("%d/%m/%Y")
 
         if j['status'] == "Tạm dừng": st.error(f"⚠️ HỒ SƠ ĐANG TẠM DỪNG. Lý do xem trong nhật ký.")
         elif time_left.total_seconds() < 0: 
-            st.error(f"📅 Hạn chót: {dl_str_view} (Đã quá hạn)")
-        elif time_left.total_seconds() < 86400: 
-            st.warning(f"📅 Hạn chót: {dl_str_view} (Sắp hết)")
+            st.error(f"⚠️ ĐÃ QUÁ HẠN TRẢ KẾT QUẢ ({dl_str_view})")
+        elif j['current_stage'] == "7. Nộp hồ sơ" and time_left.total_seconds() <= 72 * 3600:
+             st.warning(f"🔔 SẮP ĐẾN NGÀY TRẢ KẾT QUẢ ({dl_str_view}). Vui lòng kiểm tra!")
+        elif time_left.total_seconds() <= 24 * 3600: 
+            st.warning(f"🔔 Sắp hết hạn bước này ({dl_str_view})")
         else: 
-            st.info(f"📅 Hạn chót: {dl_str_view}")
+            st.info(f"📅 Hạn hoàn thành: {dl_str_view}")
 
-        # [FIX] THÊM BỘ ĐẾM THỜI GIAN CÒN LẠI
         if j['status'] not in ["Tạm dừng", "Hoàn thành", "Kết thúc sớm", "Đã xóa"]:
             if time_left.total_seconds() > 0:
                 st.info(f"⏳ **Thời gian còn lại:** {format_precise_time(time_left)}")
@@ -574,7 +596,6 @@ def render_job_card(j, user, role, user_list, is_trash=False):
         
         with t1:
             st.subheader(f"👤 {j['customer_name']}")
-            
             if role == "Quản lý":
                 with st.popover("✏️ Sửa Thông Tin"):
                     new_n = st.text_input("Tên", j['customer_name'], key=f"edit_name_{j['id']}")
@@ -613,21 +634,60 @@ def render_job_card(j, user, role, user_list, is_trash=False):
             if j['status'] in ['Tạm dừng', 'Kết thúc sớm']:
                 st.error(f"HỒ SƠ ĐANG: {j['status'].upper()}")
                 if j['status'] == 'Tạm dừng' and st.button("▶️ Tiếp tục", key=f"r{j['id']}"): resume_job(j['id'], user); st.rerun()
+            
+            # --- LOGIC RIÊNG CHO BƯỚC 7 ---
+            elif j['current_stage'] == "7. Nộp hồ sơ":
+                st.info("🏢 **ĐANG CHỜ KẾT QUẢ TỪ CƠ QUAN CHỨC NĂNG**")
+                
+                c_date, c_btn = st.columns([2, 1])
+                new_date = c_date.date_input("📅 Ngày hẹn trả kết quả:", value=dl_dt.date(), key=f"d7_{j['id']}")
+                if c_btn.button("Lưu ngày hẹn", key=f"s7_{j['id']}"):
+                     update_deadline_custom(j['id'], new_date, user)
+                     time.sleep(0.5); st.rerun()
+
+                days_left = (new_date - datetime.now().date()).days
+                
+                st.divider()
+                if days_left <= 3:
+                    if days_left < 0: st.error(f"🔴 Đã quá ngày hẹn {abs(days_left)} ngày.")
+                    else: st.warning(f"🟡 Đã có kết quả chưa? (Còn {days_left} ngày)")
+                    
+                    st.write("Nếu đã nhận được kết quả, hãy ấn xác thực bên dưới:")
+                    if st.button("✅ ĐÃ LẤY KẾT QUẢ VỀ & HOÀN THÀNH", type="primary", use_container_width=True, key=f"done_7_{j['id']}"):
+                         dep = 1 if safe_int(j.get('deposit'))==1 else 0; money = safe_int(j.get('survey_fee')); pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
+                         update_stage(j['id'], "7. Nộp hồ sơ", "Đã nhận kết quả đúng hạn.", [], user, "", 0, safe_int(j.get('is_survey_only')), dep, money, pdone)
+                         st.balloons(); time.sleep(1); st.rerun()
+                else:
+                    st.info(f"⏳ Còn {days_left} ngày nữa đến ngày hẹn. Hệ thống sẽ nhắc bạn khi còn 3 ngày.")
+                    with st.expander("Đã có kết quả sớm?"):
+                         if st.button("Đã nhận & Hoàn thành ngay", key=f"early_done_{j['id']}"):
+                            dep = 1 if safe_int(j.get('deposit'))==1 else 0; money = safe_int(j.get('survey_fee')); pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
+                            update_stage(j['id'], "7. Nộp hồ sơ", "Đã nhận kết quả sớm.", [], user, "", 0, safe_int(j.get('is_survey_only')), dep, money, pdone)
+                            st.rerun()
+                
+                st.markdown("---")
+                c_stop1, c_stop2, c_back = st.columns([1, 1, 1])
+                if c_stop1.button("⏸️ Dừng", key=f"p{j['id']}"): st.session_state[f'pm_{j['id']}'] = True
+                with c_back.popover("⬅️ Trả hồ sơ"):
+                    reason_back = st.text_input("Lý do:", key=f"reason_back_{j['id']}")
+                    if st.button("Xác nhận", key=f"btn_back_{j['id']}"):
+                        return_to_previous_stage(j['id'], j['current_stage'], reason_back, user); st.rerun()
+
+            # --- CÁC BƯỚC KHÁC ---
             else:
                 with st.form(f"f{j['id']}"):
                     nt = st.text_area("Ghi chú")
                     fl = st.file_uploader("Upload File", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
                     cur = j['current_stage']; nxt = get_next_stage_dynamic(cur, proc_name)
                     if not nxt: nxt = "8. Hoàn thành"
+                    
                     result_date = None
                     if nxt and nxt!="8. Hoàn thành":
                         st.write(f"Chuyển sang: **{nxt}**")
-                        if cur == "7. Nộp hồ sơ":
-                            st.info("📅 Thông tin nộp hồ sơ")
-                            col_n1, col_n2 = st.columns(2)
-                            submit_date = col_n1.date_input("Ngày nộp", datetime.now())
-                            result_date = col_n2.date_input("Ngày trả kết quả", datetime.now() + timedelta(days=15))
-                            asn = st.selectbox("Giao theo dõi", user_list); d = 0 
+                        if cur == "6. Lấy hồ sơ" and nxt == "7. Nộp hồ sơ":
+                             st.info("📅 Nhập ngày hẹn trả kết quả (để hệ thống nhắc)")
+                             result_date = st.date_input("Ngày hẹn trả:", datetime.now() + timedelta(days=15))
+                             asn = st.selectbox("Giao theo dõi", user_list); d=0
                         else:
                             asn = st.selectbox("Giao", user_list)
                             sla = STAGE_SLA_HOURS.get(nxt, 0); 
@@ -635,10 +695,12 @@ def render_job_card(j, user, role, user_list, is_trash=False):
                             else: st.caption("⏱️ Bước này không giới hạn thời gian.")
                             d = 0
                     else: st.info("Kết thúc"); asn=""; d=0
+                    
                     if st.form_submit_button("✅ Chuyển bước"): 
                         dep = 1 if safe_int(j.get('deposit'))==1 else 0; money = safe_int(j.get('survey_fee')); pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
                         update_stage(j['id'], cur, nt, fl, user, asn, d, safe_int(j.get('is_survey_only')), dep, money, pdone, result_date)
                         st.session_state['uploader_key'] += 1; st.success("Xong!"); time.sleep(0.5); st.rerun()
+                
                 c_stop1, c_stop2, c_back = st.columns([1, 1, 1])
                 if c_stop1.button("⏸️ Dừng", key=f"p{j['id']}"): st.session_state[f'pm_{j['id']}'] = True
                 if c_stop2.button("⏹️ Kết thúc", key=f"t{j['id']}"): st.session_state[f'tm_{j['id']}'] = True
@@ -647,12 +709,14 @@ def render_job_card(j, user, role, user_list, is_trash=False):
                     if st.button("Xác nhận", key=f"btn_back_{j['id']}"):
                         if return_to_previous_stage(j['id'], j['current_stage'], reason_back, user): st.success("Đã trả hồ sơ!"); time.sleep(1); st.rerun()
                         else: st.error("Lỗi!")
-                if st.session_state.get(f'pm_{j['id']}', False):
-                    rs = st.text_input("Lý do dừng:", key=f"rs{j['id']}"); 
-                    if st.button("OK", key=f"okp{j['id']}"): pause_job(j['id'], rs, user); st.rerun()
-                if st.session_state.get(f'tm_{j['id']}', False):
-                    rst = st.text_input("Lý do kết thúc:", key=f"rst{j['id']}"); 
-                    if st.button("OK", key=f"okt{j['id']}"): terminate_job(j['id'], rst, user); st.rerun()
+            
+            if st.session_state.get(f'pm_{j['id']}', False):
+                rs = st.text_input("Lý do dừng:", key=f"rs{j['id']}"); 
+                if st.button("OK", key=f"okp{j['id']}"): pause_job(j['id'], rs, user); st.rerun()
+            if st.session_state.get(f'tm_{j['id']}', False):
+                rst = st.text_input("Lý do kết thúc:", key=f"rst{j['id']}"); 
+                if st.button("OK", key=f"okt{j['id']}"): terminate_job(j['id'], rst, user); st.rerun()
+        
         with t3:
             with st.form(f"money_{j['id']}"):
                 dep_ok = st.checkbox("Đã tạm ứng?", value=safe_int(j.get('deposit'))==1)
@@ -665,7 +729,7 @@ def render_job_card(j, user, role, user_list, is_trash=False):
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
 # --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V1", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V1-Final", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
@@ -718,7 +782,7 @@ else:
         if st.button("Đăng xuất"): st.session_state['logged_in']=False; st.query_params.clear(); st.rerun()
 
     sel = st.session_state['menu_selection']; user_list = get_active_users_list()
-    # --- [UPDATE] LOGIC MENU 'VIỆC CỦA TÔI' VỚI 4 NÚT ---
+    
     if sel == "🏠 Việc Của Tôi":
         c_note, c_title = st.columns([1, 2])
         if df.empty: 
@@ -731,7 +795,7 @@ else:
                 my_df = active_df[~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
             
             now = datetime.now()
-            # [FIX] Ép kiểu datetime chặt chẽ hơn để bộ lọc hoạt động đúng
+            # [FIX] Ép kiểu datetime chặt chẽ để lọc đúng
             my_df['dl_dt'] = pd.to_datetime(my_df['deadline'], errors='coerce')
             my_df['dl_dt'] = my_df['dl_dt'].fillna(now + timedelta(days=365))
             
