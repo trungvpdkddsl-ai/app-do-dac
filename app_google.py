@@ -161,21 +161,17 @@ def get_audit_sheet():
             ws.append_row(["Timestamp", "User", "Action", "Details"]); return ws
     except: return None
 
-# [HÀM UPLOAD KHÔNG DÙNG SERVICE ACCOUNT - FIX LỖI 403]
 def upload_file_via_script(file_obj, sub_folder_name):
     if not file_obj: return None, None
     try:
         file_content = file_obj.read()
         file_base64 = base64.b64encode(file_content).decode('utf-8')
         payload = {"filename": file_obj.name, "mime_type": file_obj.type, "file_base64": file_base64, "folder_id": DRIVE_FOLDER_ID, "sub_folder_name": sub_folder_name}
-        # Gửi qua Script -> Không bao giờ lỗi Quota
         response = requests.post(APPS_SCRIPT_URL, json=payload)
         if response.status_code == 200:
             res_json = response.json()
             if res_json.get("status") == "success": return res_json.get("link"), file_obj.name
-            else: st.error(f"Lỗi Script: {res_json.get('message')}")
-        else: st.error(f"Lỗi mạng: {response.text}")
-    except Exception as e: st.error(f"Lỗi Python: {e}")
+    except: pass
     return None, None
 
 def find_row_index(sh, jid):
@@ -294,25 +290,19 @@ def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount, schedul
     phone_db = f"'{p}" 
     full_name_str = generate_unique_name(jid, now_str, n, p, a, proc)
     link = ""; fname = ""; log_file_str = ""
-    
-    # Upload xử lý trạng thái
-    if f:
-        with st.status("Đang khởi tạo và upload file...") as status:
-            for uploaded_file in f:
-                l, n_f = upload_file_via_script(uploaded_file, full_name_str)
-                if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
-            status.update(label="Upload thành công!", state="complete", expanded=False)
+    if f: 
+        for uploaded_file in f:
+            l, n_f = upload_file_via_script(uploaded_file, full_name_str)
+            if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
 
     schedule_note = ""
     if scheduled_date:
         start_count_time = datetime.combine(scheduled_date, datetime.min.time()).replace(hour=8)
-        # Tính deadline từ ngày hẹn
         next_step_key = "2. Đo đạc" if proc not in ["Cung cấp thông tin", "Đính chính"] else "4. Làm hồ sơ"
         dl_dt = calculate_deadline(start_count_time, STAGE_SLA_HOURS.get(next_step_key, 24))
         dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
         schedule_note = f" (Hẹn đo: {scheduled_date.strftime('%d/%m/%Y')})"
     else:
-        # Mặc định tạo mới không có deadline (xa)
         dl_dt = now + timedelta(days=365) 
         dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -340,11 +330,9 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_file_str = ""
         if f_list:
-            with st.status("Đang cập nhật và upload file...") as status:
-                for uploaded_file in f_list:
-                    l, n_f = upload_file_via_script(uploaded_file, full_code); 
-                    if l: log_file_str += f" | File: {n_f} - {l}"
-                status.update(label="Xong!", state="complete", expanded=False)
+            for uploaded_file in f_list:
+                l, n_f = upload_file_via_script(uploaded_file, full_code); 
+                if l: log_file_str += f" | File: {n_f} - {l}"
         
         nxt = get_next_stage_dynamic(stg, proc_name)
         if not nxt: nxt = "8. Hoàn thành"
@@ -510,7 +498,7 @@ def render_square_menu(role):
             st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
             st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
 
-def render_job_card(j, user, role, user_list):
+def render_job_card(j, user, role, user_list, is_trash=False):
     proc_name = extract_proc_from_log(j['logs'])
     code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
     now = datetime.now()
@@ -542,7 +530,17 @@ def render_job_card(j, user, role, user_list):
     if j['status'] == "Đang xử lý" and j['current_stage'] not in ["1. Tạo mới", "8. Hoàn thành"]:
          if limit > 0 and elapsed_delta.total_seconds() > limit * 3600: stuck_alert = " | ⚠️ KẸT"
     
-    with st.expander(f"{icon} {code_display} | {j['current_stage']}{stuck_alert}"):
+    label = f"{icon} {code_display} | {j['current_stage']}{stuck_alert}"
+    if is_trash: label = f"❌ {code_display}"
+
+    with st.expander(label):
+        if is_trash:
+            st.write(f"Ngày xóa: {j['logs'].splitlines()[-1] if j['logs'] else 'N/A'}")
+            c1, c2 = st.columns(2)
+            if c1.button("♻️ Khôi phục", key=f"rest_{j['id']}"): restore_from_trash(j['id'], user); time.sleep(1); st.rerun()
+            if c2.button("🔥 Xóa vĩnh viễn", key=f"del_forever_{j['id']}"): delete_forever(j['id'], user); time.sleep(1); st.rerun()
+            return
+
         if j['status'] == "Đang xử lý" and j['current_stage'] not in ["1. Tạo mới", "8. Hoàn thành"]:
              if limit > 0 and elapsed_delta.total_seconds() > limit * 3600:
                  st.error(f"⚠️ **QUÁ HẠN BƯỚC NÀY:** Đã làm {elapsed_str} (Quy định: {limit}h)")
@@ -596,9 +594,7 @@ def render_job_card(j, user, role, user_list):
                 with st.form(f"f{j['id']}"):
                     nt = st.text_area("Ghi chú")
                     fl = st.file_uploader("Upload File", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
-                    
-                    # [FIX] Lấy bước tiếp theo động
-                    cur = j['current_stage']
+                    cur = j['current_stage']; 
                     nxt = get_next_stage_dynamic(cur, proc_name)
                     if not nxt: nxt = "8. Hoàn thành"
 
@@ -648,7 +644,7 @@ def render_job_card(j, user, role, user_list):
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
 # --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V28", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V28.1", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
@@ -736,35 +732,30 @@ else:
 
     elif sel == "📝 Tạo Hồ Sơ":
         st.title("Tạo Hồ Sơ")
-        with st.form("new"):
-            c1, c2 = st.columns(2); n = c1.text_input("Tên Khách Hàng"); p = c2.text_input("SĐT"); a = st.text_input("Địa chỉ")
-            c3, c4 = st.columns([1, 1]); 
-            with c3: is_sv = st.checkbox("🛠️ CHỈ ĐO ĐẠC")
-            with c4: proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
-            st.markdown("---")
-            
-            # [FIX UI HẸN GIỜ] Hiển thị ngay bên ngoài
-            cols_sch = st.columns([0.4, 0.6])
-            with cols_sch[0]: 
-                is_scheduled = st.checkbox("📅 Hẹn ngày đo sau")
-            with cols_sch[1]:
-                sch_date = None
-                if is_scheduled:
-                    sch_date = st.date_input("Chọn ngày hẹn:", datetime.now() + timedelta(days=1), label_visibility="collapsed")
-            
-            if is_scheduled and sch_date:
-                st.info(f"Hồ sơ sẽ ở trạng thái chờ. Quy trình 24h sẽ bắt đầu tính từ 08:00 ngày {sch_date.strftime('%d/%m/%Y')}.")
-            
-            f = st.file_uploader("File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"new_up_{st.session_state['uploader_key']}")
-            st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
-            asn = st.selectbox("Giao:", user_list)
-            
-            # Nút tạo hồ sơ
-            if st.form_submit_button("Tạo Hồ Sơ"):
-                if n and asn: 
-                    add_job(n, p, a, proc, f, user, asn, is_sv, dep_ok, fee_val, sch_date)
-                    st.session_state['uploader_key'] += 1; st.success("OK! Hồ sơ mới đã tạo."); st.rerun()
-                else: st.error("Thiếu thông tin!")
+        # [FIX] Bỏ st.form để input hoạt động ngay
+        c1, c2 = st.columns(2); n = st.text_input("Tên Khách Hàng"); p = st.text_input("SĐT")
+        a = st.text_input("Địa chỉ")
+        c3, c4 = st.columns([1, 1]); 
+        with c3: is_sv = st.checkbox("🛠️ CHỈ ĐO ĐẠC")
+        with c4: proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
+        
+        st.markdown("---")
+        # [FIX UI HẸN GIỜ]
+        cols_sch = st.columns([0.4, 0.6])
+        with cols_sch[0]: is_scheduled = st.checkbox("📅 Hẹn ngày đo sau")
+        sch_date = None
+        with cols_sch[1]:
+            if is_scheduled: sch_date = st.date_input("Chọn ngày hẹn:", datetime.now() + timedelta(days=1), label_visibility="collapsed")
+        
+        if is_scheduled and sch_date: st.info(f"Hồ sơ sẽ chờ. Quy trình 24h tính từ 08:00 ngày {sch_date.strftime('%d/%m/%Y')}.")
+        
+        f = st.file_uploader("File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"new_up_{st.session_state['uploader_key']}")
+        st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
+        asn = st.selectbox("Giao:", user_list)
+        
+        if st.button("Tạo Hồ Sơ", type="primary"):
+            if n and asn: add_job(n, p, a, proc, f, user, asn, is_sv, dep_ok, fee_val, sch_date); st.session_state['uploader_key'] += 1; st.success("OK! Hồ sơ mới đã tạo."); st.rerun()
+            else: st.error("Thiếu thông tin!")
 
     elif sel == "💰 Công Nợ":
         st.title("💰 Quản Lý Công Nợ")
@@ -861,7 +852,7 @@ else:
             st.title("🗑️ Thùng Rác"); trash_df = df[df['status'] == 'Đã xóa']
             if trash_df.empty: st.success("Thùng rác trống!")
             else:
-                for i, j in trash_df.iterrows(): render_job_card(j, user, role, user_list)
+                for i, j in trash_df.iterrows(): render_job_card(j, user, role, user_list, is_trash=True)
         else: st.error("Cấm truy cập!")
 
     elif sel == "🛡️ Nhật Ký":
