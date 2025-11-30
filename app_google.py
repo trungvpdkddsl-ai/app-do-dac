@@ -20,56 +20,33 @@ APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyEMEGyS_sVCA4eyVRFXx
 DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy"
 
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
+
 STAGES_ORDER = ["1. Tạo mới", "2. Đo đạc", "3. Hoàn thiện trích đo", "4. Làm hồ sơ", "5. Ký hồ sơ", "6. Lấy hồ sơ", "7. Nộp hồ sơ", "8. Hoàn thành"]
 PROCEDURES_LIST = ["Cấp lần đầu", "Cấp đổi", "Chuyển quyền", "Tách thửa"]
+
 WORKFLOW_DEFAULT = {
-    "1. Tạo mới": "2. Đo đạc", "2. Đo đạc": "3. Hoàn thiện trích đo", "3. Hoàn thiện trích đo": "4. Làm hồ sơ",
-    "4. Làm hồ sơ": "5. Ký hồ sơ", "5. Ký hồ sơ": "6. Lấy hồ sơ", "6. Lấy hồ sơ": "7. Nộp hồ sơ", "7. Nộp hồ sơ": "8. Hoàn thành", "8. Hoàn thành": None
+    "1. Tạo mới": "2. Đo đạc", 
+    "2. Đo đạc": "3. Hoàn thiện trích đo", 
+    "3. Hoàn thiện trích đo": "4. Làm hồ sơ",
+    "4. Làm hồ sơ": "5. Ký hồ sơ", 
+    "5. Ký hồ sơ": "6. Lấy hồ sơ", 
+    "6. Lấy hồ sơ": "7. Nộp hồ sơ", 
+    "7. Nộp hồ sơ": "8. Hoàn thành", 
+    "8. Hoàn thành": None
 }
-STAGE_SLA_HOURS = {"1. Tạo mới": 0, "2. Đo đạc": 24, "3. Hoàn thiện trích đo": 24, "4. Làm hồ sơ": 24, "5. Ký hồ sơ": 72, "6. Lấy hồ sơ": 24, "7. Nộp hồ sơ": 360}
 
-# --- 2. HÀM HỖ TRỢ GIAO DIỆN ---
-def render_progress_bar(current_stage, status):
-    try: idx = STAGES_ORDER.index(current_stage)
-    except: idx = 0
-    color = "#dc3545" if status in ["Tạm dừng", "Kết thúc sớm", "Đã xóa"] else "#ffc107"
-    st.markdown(f"""<style>.step-container {{display: flex; justify-content: space-between; margin-bottom: 15px;}} .step-item {{flex: 1; text-align: center; position: relative;}} .step-item:not(:last-child)::after {{content: ''; position: absolute; top: 15px; left: 50%; width: 100%; height: 2px; background: #e0e0e0; z-index: -1;}} .step-circle {{width: 30px; height: 30px; margin: 0 auto 5px; border-radius: 50%; line-height: 30px; color: white; font-weight: bold; font-size: 12px;}} .done {{background: #28a745;}} .active {{background: {color}; color: black;}} .pending {{background: #e9ecef; color: #999;}}</style>""", unsafe_allow_html=True)
-    h = '<div class="step-container">'
-    for i, s in enumerate(STAGES_ORDER):
-        cls = "done" if i < idx else "active" if i == idx else "pending"
-        ico = "✓" if i < idx else str(i+1)
-        if i == idx and status == "Tạm dừng": ico = "⛔"
-        if i == idx and status == "Kết thúc sớm": ico = "⏹️"
-        h += f'<div class="step-item"><div class="step-circle {cls}">{ico}</div><div style="font-size:11px">{s.split(". ")[1]}</div></div>'
-    st.markdown(h+'</div>', unsafe_allow_html=True)
+# SLA (GIỜ) - Đo đạc và Trích đo là 24h
+STAGE_SLA_HOURS = {
+    "1. Tạo mới": 0,       
+    "2. Đo đạc": 24,       
+    "3. Hoàn thiện trích đo": 24,
+    "4. Làm hồ sơ": 24,    
+    "5. Ký hồ sơ": 72,     
+    "6. Lấy hồ sơ": 24,    
+    "7. Nộp hồ sơ": 360,   
+}
 
-def render_contact_buttons(phone):
-    if not phone: return ""
-    clean_phone = re.sub(r'\D', '', str(phone))
-    if len(clean_phone) < 9: return f"<span style='color: gray;'>SĐT: {phone}</span>"
-    zalo_link = f"https://zalo.me/{clean_phone}"; call_link = f"tel:{clean_phone}"
-    return f"""<div style="display: flex; gap: 10px; margin-bottom: 10px;"><a href="{zalo_link}" target="_blank" style="text-decoration: none;"><div style="background-color: #0068FF; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">💬 Chat Zalo</div></a><a href="{call_link}" style="text-decoration: none;"><div style="background-color: #28a745; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">📞 Gọi Điện</div></a></div>"""
-
-def change_menu(new_menu):
-    st.session_state['menu_selection'] = new_menu
-
-def render_square_menu(role):
-    st.markdown("""<style>div.stButton > button {width: 100%; height: 80px; border-radius: 12px; border: 1px solid #ddd; background-color: #f8f9fa; color: #333; font-weight: bold; font-size: 14px; transition: all 0.3s ease; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);} div.stButton > button:hover {background-color: #e2e6ea; border-color: #adb5bd; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1);} div.stButton > button:active { background-color: #dae0e5; transform: translateY(0); }</style>""", unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-    with c1:
-        st.button("🏠 Việc Của Tôi", on_click=change_menu, args=("🏠 Việc Của Tôi",))
-        st.button("📝 Tạo Hồ Sơ", on_click=change_menu, args=("📝 Tạo Hồ Sơ",))
-        if role == "Quản lý":
-             st.button("💰 Công Nợ", on_click=change_menu, args=("💰 Công Nợ",))
-             st.button("🗑️ Thùng Rác", on_click=change_menu, args=("🗑️ Thùng Rác",))
-    with c2:
-        st.button("🔍 Tra Cứu", on_click=change_menu, args=("🔍 Tra Cứu",))
-        st.button("📊 Báo Cáo", on_click=change_menu, args=("📊 Báo Cáo",))
-        if role == "Quản lý":
-            st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
-            st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
-
-# --- 3. HÀM HỖ TRỢ & KẾT NỐI ---
+# --- 2. HÀM HỖ TRỢ & KẾT NỐI ---
 def safe_int(value):
     try: return int(float(str(value).replace(",", "").replace(".", ""))) if pd.notna(value) and value != "" else 0
     except: return 0
@@ -81,18 +58,43 @@ def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
     return match.group(1) if match else ""
 
-def check_bottleneck(logs, current_stage):
-    if current_stage == "8. Hoàn thành" or not logs: return False, 0, 0
-    limit = STAGE_SLA_HOURS.get(current_stage, 0)
-    if limit == 0: return False, 0, 0
+# [MỚI] Hàm format thời gian chi tiết (X giờ Y phút)
+def format_duration(td):
+    total_seconds = int(td.total_seconds())
+    is_negative = total_seconds < 0
+    total_seconds = abs(total_seconds)
+    
+    days = total_seconds // 86400
+    hours = (total_seconds % 86400) // 3600
+    minutes = (total_seconds % 3600) // 60
+    
+    time_str = ""
+    if days > 0: time_str += f"{days} ngày "
+    if hours > 0: time_str += f"{hours} giờ "
+    time_str += f"{minutes} phút"
+    
+    if not time_str: time_str = "0 phút"
+    
+    if is_negative: return f"Quá hạn {time_str}"
+    return time_str
+
+# [CẬP NHẬT] Hàm check điểm nghẽn & thời gian đã xử lý
+def get_processing_time(logs, current_stage):
+    if current_stage == "8. Hoàn thành" or not logs: return 0, 0, None
+    
     try:
+        # Tìm mốc thời gian cuối cùng trong log (Lúc hồ sơ được chuyển đến)
         matches = re.findall(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', str(logs))
         if matches:
-            last_dt = datetime.strptime(matches[-1], "%Y-%m-%d %H:%M:%S")
-            hours_passed = int((datetime.now() - last_dt).total_seconds() / 3600)
-            return hours_passed >= limit, hours_passed, limit
+            last_time_str = matches[-1]
+            last_dt = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
+            
+            # Thời gian đã trôi qua thực tế
+            elapsed_delta = datetime.now() - last_dt
+            
+            return elapsed_delta, last_dt
     except: pass
-    return False, 0, 0
+    return timedelta(0), None
 
 def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
     try:
@@ -112,6 +114,13 @@ def extract_files_from_log(log_text):
         raw_links = re.findall(r'(https?://[^\s]+)', str(log_text))
         return [("File cũ", l) for l in raw_links]
     return matches
+
+def render_contact_buttons(phone):
+    if not phone: return ""
+    clean_phone = re.sub(r'\D', '', str(phone))
+    if len(clean_phone) < 9: return f"<span style='color: gray;'>SĐT: {phone}</span>"
+    zalo_link = f"https://zalo.me/{clean_phone}"; call_link = f"tel:{clean_phone}"
+    return f"""<div style="display: flex; gap: 10px; margin-bottom: 10px;"><a href="{zalo_link}" target="_blank" style="text-decoration: none;"><div style="background-color: #0068FF; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">💬 Chat Zalo</div></a><a href="{call_link}" style="text-decoration: none;"><div style="background-color: #28a745; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">📞 Gọi Điện</div></a></div>"""
 
 def calculate_deadline(start_date, hours_to_add):
     if hours_to_add == 0: return None
@@ -270,28 +279,42 @@ if 'scheduler_started' not in st.session_state:
     st.session_state['scheduler_started'] = True
 
 # --- LOGIC ADD/UPDATE ---
-def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount):
+def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount, scheduled_date=None):
     sh = get_sheet(); now = datetime.now(); now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     jid, seq_str = get_daily_sequence_id()
     phone_db = f"'{p}" 
     full_name_str = generate_unique_name(jid, now_str, n, p, a, proc)
+    
     link = ""; fname = ""; log_file_str = ""
     if f: 
         for uploaded_file in f:
             l, n_f = upload_to_drive(uploaded_file, full_name_str)
             if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
+
+    schedule_note = ""
+    if scheduled_date:
+        start_count_time = datetime.combine(scheduled_date, datetime.min.time()).replace(hour=8)
+        dl_dt = calculate_deadline(start_count_time, STAGE_SLA_HOURS["2. Đo đạc"])
+        dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
+        schedule_note = f" (Hẹn đo: {scheduled_date.strftime('%d/%m/%Y')})"
+    else:
+        dl_dt = calculate_deadline(now, STAGE_SLA_HOURS["2. Đo đạc"])
+        dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
+
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
-    log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{log_file_str}"
+    log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{schedule_note}{log_file_str}"
     asn_clean = asn.split(" - ")[0] if asn else ""
     sv_flag = 1 if is_survey else 0; dep_flag = 1 if deposit_ok else 0
-    dl = (now + timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S")
+    
     sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
+    
     type_msg = f"({proc.upper()})"
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
     file_msg = f"\n📎 Có {len(f)} file đính kèm" if f else ""
     assign_msg = f"👉 <b>{asn_clean}</b>"
-    send_telegram_msg(f"🚀 <b>MỚI #{seq_str} {type_msg}</b>\n📂 <b>{full_name_str}</b>\n{assign_msg}\n💰 {money_msg}{file_msg}")
+    schedule_msg = f"\n📅 <b>Lịch hẹn: {scheduled_date.strftime('%d/%m/%Y')}</b>" if scheduled_date else ""
+    send_telegram_msg(f"🚀 <b>MỚI #{seq_str} {type_msg}</b>\n📂 <b>{full_name_str}</b>\n{assign_msg}{schedule_msg}\n💰 {money_msg}{file_msg}")
 
 def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid, result_date=None):
     sh = get_sheet(); r = find_row_index(sh, jid)
@@ -312,12 +335,18 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
             if asn: 
                 assign_clean = asn.split(" - ")[0]; sh.update_cell(r, 8, assign_clean)
                 assign_str = f" -> Giao: {assign_clean}"; assign_tele = f"\n👉 Giao: <b>{assign_clean}</b>"
+            
             if result_date:
                 new_deadline = result_date.strftime("%Y-%m-%d %H:%M:%S")
                 sh.update_cell(r, 9, new_deadline); nt += f" (Hẹn trả: {result_date.strftime('%d/%m/%Y')})"
             else:
-                new_dl = calculate_deadline(datetime.now(), STAGE_SLA_HOURS.get(nxt, 24))
-                if new_dl: sh.update_cell(r, 9, new_dl.strftime("%Y-%m-%d %H:%M:%S"))
+                hours_to_add = STAGE_SLA_HOURS.get(nxt, 24)
+                if hours_to_add > 0:
+                    new_dl = calculate_deadline(datetime.now(), hours_to_add)
+                    sh.update_cell(r, 9, new_dl.strftime("%Y-%m-%d %H:%M:%S"))
+                else:
+                    sh.update_cell(r, 9, (datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S"))
+            
             sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
             olog = sh.cell(r, 11).value
             nlog = f"\n[{now}] {u}: {stg}->{nxt}{assign_str} | Note: {nt}{log_file_str}"
@@ -406,12 +435,27 @@ def delete_forever(jid, u):
 def scan_bottlenecks(df):
     bottlenecks = []
     for _, j in df.iterrows():
-        is_stuck, hours, limit = check_bottleneck(j['logs'], j['current_stage'])
+        is_stuck, hours, limit = check_bottleneck(j['deadline'], j['current_stage']) # Dùng deadline
         if is_stuck and j['status'] == "Đang xử lý":
             proc_name = extract_proc_from_log(j['logs'])
             name = generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", proc_name)
             bottlenecks.append(f"⚠️ **{name}**\n- Kẹt ở: {j['current_stage']}\n- Thời gian: {hours}h (Giới hạn: {limit}h)")
     return bottlenecks
+
+# --- UI COMPONENTS & RENDER ---
+def render_progress_bar(current_stage, status):
+    try: idx = STAGES_ORDER.index(current_stage)
+    except: idx = 0
+    color = "#dc3545" if status in ["Tạm dừng", "Kết thúc sớm", "Đã xóa"] else "#ffc107"
+    st.markdown(f"""<style>.step-container {{display: flex; justify-content: space-between; margin-bottom: 15px;}} .step-item {{flex: 1; text-align: center; position: relative;}} .step-item:not(:last-child)::after {{content: ''; position: absolute; top: 15px; left: 50%; width: 100%; height: 2px; background: #e0e0e0; z-index: -1;}} .step-circle {{width: 30px; height: 30px; margin: 0 auto 5px; border-radius: 50%; line-height: 30px; color: white; font-weight: bold; font-size: 12px;}} .done {{background: #28a745;}} .active {{background: {color}; color: black;}} .pending {{background: #e9ecef; color: #999;}}</style>""", unsafe_allow_html=True)
+    h = '<div class="step-container">'; 
+    for i, s in enumerate(STAGES_ORDER):
+        cls = "done" if i < idx else "active" if i == idx else "pending"
+        ico = "✓" if i < idx else str(i+1)
+        if i == idx and status == "Tạm dừng": ico = "⛔"
+        if i == idx and status == "Kết thúc sớm": ico = "⏹️"
+        h += f'<div class="step-item"><div class="step-circle {cls}">{ico}</div><div style="font-size:11px">{s.split(". ")[1]}</div></div>'
+    st.markdown(h+'</div>', unsafe_allow_html=True)
 
 def render_job_card(j, user, role, user_list):
     proc_name = extract_proc_from_log(j['logs'])
@@ -421,20 +465,27 @@ def render_job_card(j, user, role, user_list):
     except: dl_dt = now + timedelta(days=365)
     
     dl_str = dl_dt.strftime("%d/%m/%Y %H:%M")
-    dl_status = "HÔM NAY" if dl_dt.date() == now.date() else f"Còn {(dl_dt - now).days} ngày"
-    if dl_dt < now: dl_status = "QUÁ HẠN"
+    time_left = dl_dt - now
+    dl_status = f"Còn {format_duration(time_left)}"
+    
+    if dl_dt < now: dl_status = "QUÁ HẠN " + format_duration(time_left)
     
     if j['current_stage'] in ["1. Tạo mới", "8. Hoàn thành"]: icon = "🟢"; time_info = ""
     else:
         icon = "⛔" if j['status']=='Tạm dừng' else "⏹️" if j['status']=='Kết thúc sớm' else ("🔴" if dl_dt < now else "🟡" if dl_dt <= now+timedelta(days=1) else "🟢")
         time_info = f"📅 **Hạn bước này: {dl_str}** | Trạng thái: **{dl_status}**"
     
-    is_stuck, hours, limit = check_bottleneck(j['logs'], j['current_stage'])
-    stuck_alert = f" | ⚠️ KẸT {hours}H" if is_stuck and j['status'] == "Đang xử lý" else ""
+    # [HIỂN THỊ THỜI GIAN ĐÃ XỬ LÝ TỪ LÚC NHẬN VIỆC]
+    elapsed_delta, start_stage_dt = get_processing_time(j['logs'], j['current_stage'])
+    elapsed_str = format_duration(elapsed_delta)
     
-    with st.expander(f"{icon} {code_display} | {j['current_stage']}{stuck_alert}"):
-        if is_stuck and j['status'] == "Đang xử lý": st.error(f"⚠️ **CẢNH BÁO CHẬM:** Kẹt {hours}h (Max {limit}h)")
-        elif j['current_stage'] not in ["1. Tạo mới", "8. Hoàn thành"]: st.info(f"⏱️ Đã xử lý: **{hours}h** / Định mức: {limit}h")
+    # Lấy định mức để so sánh
+    limit = STAGE_SLA_HOURS.get(j['current_stage'], 0)
+    
+    with st.expander(f"{icon} {code_display} | {j['current_stage']}"):
+        if j['status'] == "Đang xử lý" and j['current_stage'] not in ["1. Tạo mới", "8. Hoàn thành"]:
+             st.info(f"⏱️ **Đã xử lý:** {elapsed_str} / Định mức: {limit}h")
+        
         if time_info: st.write(time_info)
         
         render_progress_bar(j['current_stage'], j['status'])
@@ -529,7 +580,7 @@ def render_job_card(j, user, role, user_list):
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
 # --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V23.6", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V25", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
@@ -569,9 +620,9 @@ else:
         df = get_all_jobs_df()
         if not df.empty:
             now = datetime.now(); active_df = df[df['status'] != 'Đã xóa']; active_df['dl_dt'] = pd.to_datetime(active_df['deadline'], errors='coerce')
-            urgent = active_df[(active_df['dl_dt'] > now) & (active_df['dl_dt'] <= now + timedelta(hours=24))]
+            urgent = active_df[(active_df['dl_dt'] > now) & (active_df['dl_dt'] <= now + timedelta(hours=48))]
             if not urgent.empty:
-                st.warning(f"🔥 **GẤP: {len(urgent)} hồ sơ < 24h**")
+                st.warning(f"🔥 **GẤP: {len(urgent)} hồ sơ < 48h**")
                 if role == "Quản lý":
                     counts = urgent['assigned_to'].value_counts()
                     for u, c in counts.items(): st.caption(f"- {u}: {c}")
@@ -635,7 +686,7 @@ else:
             asn = st.selectbox("Giao:", user_list)
             if st.form_submit_button("Tạo Hồ Sơ"):
                 if n and asn: 
-                    add_job(n, p, a, proc, f, user, asn, is_sv, dep_ok, fee_val)
+                    add_job(n, p, a, proc, f, user, asn, is_sv, dep_ok, fee_val, sch_date)
                     st.session_state['uploader_key'] += 1; st.success("OK! Hồ sơ mới đã tạo."); st.rerun()
                 else: st.error("Thiếu thông tin!")
 
@@ -717,19 +768,14 @@ else:
             st.title("Phân Quyền"); df = get_all_users()
             for i, u in df.iterrows():
                 with st.container(border=True):
-                    c1, c2, c3 = st.columns([0.6, 0.3, 0.1])
-                    with c1:
-                        st.subheader(f"👤 {u['fullname']}")
-                        st.caption(f"User: {u['username']}")
+                    c1, c2 = st.columns([0.7, 0.3]); with c1: st.subheader(f"👤 {u['fullname']}"); st.caption(f"User: {u['username']}")
                     with c2:
                         if u['username']!=user:
-                            idx = ROLES.index(u['role']) if u['role'] in ROLES else 2
-                            nr = st.selectbox("", ROLES, index=idx, key=u['username'], label_visibility="collapsed")
+                            idx = ROLES.index(u['role']) if u['role'] in ROLES else 2; nr = st.selectbox("", ROLES, index=idx, key=u['username'], label_visibility="collapsed")
                             if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Đã lưu!"); time.sleep(0.5); st.rerun()
                         else: st.info("Admin")
-                    with c3:
-                        if u['username']!=user:
-                            if st.button("🗑️", key=f"del_u_{u['username']}"): delete_user_permanently(u['username']); st.rerun()
+                    if u['username']!=user:
+                        if st.button("🗑️ Xóa", key=f"del_u_{u['username']}"): delete_user_permanently(u['username']); st.rerun()
         else: st.error("Cấm truy cập!")
 
     elif sel == "🗑️ Thùng Rác":
