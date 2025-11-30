@@ -45,7 +45,6 @@ def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
     return match.group(1) if match else ""
 
-# Kiểm tra điểm nghẽn (Trả về trạng thái: 0=Bình thường, 1=Sắp quá hạn, 2=Quá hạn)
 def check_bottleneck(logs, current_stage):
     if current_stage == "7. Hoàn thành" or not logs: return 0, 0, 0
     try:
@@ -55,13 +54,8 @@ def check_bottleneck(logs, current_stage):
             diff = datetime.now() - last_dt
             hours_passed = int(diff.total_seconds() / 3600)
             limit = STAGE_SLA_HOURS.get(current_stage, 9999) 
-            
-            # Logic mới: 
-            # Đỏ (2) nếu vượt quá giới hạn
-            # Vàng (1) nếu còn dưới 24h là chạm giới hạn
             if hours_passed >= limit: return 2, hours_passed, limit
             if limit - hours_passed <= 24: return 1, hours_passed, limit
-            
             return 0, hours_passed, limit
     except: pass
     return 0, 0, 0
@@ -202,12 +196,25 @@ def create_user(u, p, n):
         sh.append_row([u, make_hash(p), n, "Chưa cấp quyền"]); return True
     except: return False
 
-def get_all_users(): sh = get_users_sheet(); return pd.DataFrame(sh.get_all_records())
+# [ĐÃ SỬA: THÊM CƠ CHẾ AN TOÀN CHO HÀM LẤY USER]
+def get_all_users(): 
+    sh = get_users_sheet()
+    if sh is None: return pd.DataFrame()
+    try: return pd.DataFrame(sh.get_all_records())
+    except: return pd.DataFrame()
+
 def update_user_role(u, r): sh = get_users_sheet(); c = sh.find(u); sh.update_cell(c.row, 4, r)
-def get_active_users_list(): df = get_all_users(); return df[df['role']!='Chưa cấp quyền'].apply(lambda x: f"{x['username']} - {x['fullname']}", axis=1).tolist() if not df.empty else []
+
+# [ĐÃ SỬA: THÊM CƠ CHẾ AN TOÀN CHO HÀM LỌC USER]
+def get_active_users_list(): 
+    df = get_all_users()
+    if df.empty or 'role' not in df.columns: return ["admin"] # Trả về list mặc định nếu lỗi
+    return df[df['role']!='Chưa cấp quyền'].apply(lambda x: f"{x['username']} - {x['fullname']}", axis=1).tolist()
 
 def get_all_jobs_df():
-    sh = get_sheet(); data = sh.get_all_records(); df = pd.DataFrame(data)
+    sh = get_sheet(); 
+    if sh is None: return pd.DataFrame()
+    data = sh.get_all_records(); df = pd.DataFrame(data)
     if not df.empty:
         df['id'] = df['id'].apply(safe_int)
         if 'deposit' not in df.columns: df['deposit'] = 0
@@ -225,11 +232,10 @@ def get_daily_sequence_id():
     else: max_seq = max([int(jid[-2:]) for jid in today_ids]); seq = max_seq + 1
     return int(f"{prefix}{seq:02}"), f"{seq:02}"
 
-# [MỚI] HÀM QUÉT ĐIỂM NGHẼN (ĐỊNH NGHĨA TRƯỚC UI)
+# [QUAN TRỌNG] Hàm scan phải nằm trước khi dùng
 def scan_bottlenecks(df):
     bottlenecks = []
     for _, j in df.iterrows():
-        # Trạng thái trả về: 0=OK, 1=Vàng, 2=Đỏ
         status, hours, limit = check_bottleneck(j['logs'], j['current_stage'])
         if status > 0 and j['status'] == "Đang xử lý":
             proc_name = extract_proc_from_log(j['logs'])
@@ -377,17 +383,23 @@ def terminate_job(jid, rs, u):
 def move_to_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.update_cell(r, 7, "Đã xóa"); log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}"); st.toast("Đã chuyển vào thùng rác!")
+        sh.update_cell(r, 7, "Đã xóa")
+        log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}")
+        st.toast("Đã chuyển vào thùng rác!")
 
 def restore_from_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.update_cell(r, 7, "Đang xử lý"); log_to_audit(u, "RESTORE_JOB", f"ID: {jid}"); st.toast("Đã khôi phục hồ sơ!")
+        sh.update_cell(r, 7, "Đang xử lý")
+        log_to_audit(u, "RESTORE_JOB", f"ID: {jid}")
+        st.toast("Đã khôi phục hồ sơ!")
 
 def delete_forever(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r:
-        sh.delete_rows(r); log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}"); st.toast("Đã xóa vĩnh viễn!")
+        sh.delete_rows(r)
+        log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}")
+        st.toast("Đã xóa vĩnh viễn!")
 
 # --- 4. UI COMPONENTS ---
 def render_progress_bar(current_stage, status):
@@ -415,11 +427,12 @@ def render_job_card(j, user, role):
     dl_status = "HÔM NAY" if dl_dt.date() == now.date() else f"Còn {(dl_dt - now).days} ngày"
     if dl_dt < now: dl_status = "QUÁ HẠN"
     
+    # Logic hiển thị cảnh báo
     status_bot, hours, limit = check_bottleneck(j['logs'], j['current_stage'])
     stuck_alert = ""
     if j['status'] == "Đang xử lý":
-        if status_bot == 2: stuck_alert = f" | ⚠️ QUÁ HẠN BƯỚC ({hours}h/{limit}h)"
-        elif status_bot == 1: stuck_alert = f" | 🟡 SẮP QUÁ HẠN ({hours}h/{limit}h)"
+        if status_bot == 2: stuck_alert = f" | ⚠️ KẸT {hours}H"
+        elif status_bot == 1: stuck_alert = f" | 🟡 SẮP QUÁ HẠN"
     
     icon = "⛔" if j['status']=='Tạm dừng' else "⏹️" if j['status']=='Kết thúc sớm' else ("🔴" if dl_dt < now else "🟡" if dl_dt <= now+timedelta(days=1) else "🟢")
     
@@ -565,11 +578,9 @@ else:
                         progress_text = "Đang xử lý..."
                         my_bar = st.progress(0, text=progress_text)
                         total = len(st.session_state['selected_batch_jobs'])
-                        
                         for i, jid in enumerate(st.session_state['selected_batch_jobs']):
                             update_stage(jid, "BATCH_UPDATE", batch_stage, None, user, batch_assign, batch_deadline, 0, None, None, None)
                             my_bar.progress((i + 1) / total, text=f"Đang xử lý {i+1}/{total}")
-                        
                         st.success("Đã cập nhật thành công!")
                         st.session_state['selected_batch_jobs'] = [] 
                         time.sleep(1); st.rerun()
@@ -610,8 +621,7 @@ else:
             else:
                 over = my_df[my_df['dl_dt'] < now] # Quá hạn
                 
-                # Logic Gấp: Chưa quá hạn VÀ hạn <= 24h tới
-                # (Loại bỏ những hồ sơ ĐÃ quá hạn khỏi danh sách Gấp)
+                # Gấp: Chưa quá hạn và hạn <= 24h
                 urgent_mask = (my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(days=1))
                 soon = my_df[urgent_mask] 
                 
@@ -642,10 +652,9 @@ else:
                         else:
                             if j['id'] in st.session_state['selected_batch_jobs']:
                                 st.session_state['selected_batch_jobs'].remove(j['id'])
-                    with c_card:
-                        render_job_card(j, user, role)
+                    with c_card: render_job_card(j, user, role)
 
-    # ... (Phần còn lại giữ nguyên) ...
+    # ... (Các tab khác giữ nguyên như cũ)
     elif sel == "📝 Tạo Hồ Sơ":
         st.title("Tạo Hồ Sơ")
         with st.form("new"):
