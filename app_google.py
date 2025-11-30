@@ -28,17 +28,54 @@ WORKFLOW_DEFAULT = {
 }
 STAGE_SLA_HOURS = {"1. Tạo mới": 0, "2. Đo đạc": 48, "3. Hoàn thiện trích đo": 24, "4. Làm hồ sơ": 24, "5. Ký hồ sơ": 72, "6. Lấy hồ sơ": 24, "7. Nộp hồ sơ": 360}
 
-# --- 2. HÀM HỖ TRỢ & KẾT NỐI ---
+# --- 2. HÀM HỖ TRỢ GIAO DIỆN (ĐƯA LÊN ĐẦU ĐỂ TRÁNH LỖI) ---
+def render_progress_bar(current_stage, status):
+    try: idx = STAGES_ORDER.index(current_stage)
+    except: idx = 0
+    color = "#dc3545" if status in ["Tạm dừng", "Kết thúc sớm", "Đã xóa"] else "#ffc107"
+    st.markdown(f"""<style>.step-container {{display: flex; justify-content: space-between; margin-bottom: 15px;}} .step-item {{flex: 1; text-align: center; position: relative;}} .step-item:not(:last-child)::after {{content: ''; position: absolute; top: 15px; left: 50%; width: 100%; height: 2px; background: #e0e0e0; z-index: -1;}} .step-circle {{width: 30px; height: 30px; margin: 0 auto 5px; border-radius: 50%; line-height: 30px; color: white; font-weight: bold; font-size: 12px;}} .done {{background: #28a745;}} .active {{background: {color}; color: black;}} .pending {{background: #e9ecef; color: #999;}}</style>""", unsafe_allow_html=True)
+    h = '<div class="step-container">'; 
+    for i, s in enumerate(STAGES_ORDER):
+        cls = "done" if i < idx else "active" if i == idx else "pending"
+        ico = "✓" if i < idx else str(i+1)
+        if i == idx and status == "Tạm dừng": ico = "⛔"
+        if i == idx and status == "Kết thúc sớm": ico = "⏹️"
+        h += f'<div class="step-item"><div class="step-circle {cls}">{ico}</div><div style="font-size:11px">{s.split(". ")[1]}</div></div>'
+    st.markdown(h+'</div>', unsafe_allow_html=True)
+
+def render_contact_buttons(phone):
+    if not phone: return ""
+    clean_phone = re.sub(r'\D', '', str(phone))
+    if len(clean_phone) < 9: return f"<span style='color: gray;'>SĐT: {phone}</span>"
+    zalo_link = f"https://zalo.me/{clean_phone}"; call_link = f"tel:{clean_phone}"
+    return f"""<div style="display: flex; gap: 10px; margin-bottom: 10px;"><a href="{zalo_link}" target="_blank" style="text-decoration: none;"><div style="background-color: #0068FF; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">💬 Chat Zalo</div></a><a href="{call_link}" style="text-decoration: none;"><div style="background-color: #28a745; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">📞 Gọi Điện</div></a></div>"""
+
+def change_menu(new_menu):
+    st.session_state['menu_selection'] = new_menu
+
+def render_square_menu(role):
+    st.markdown("""<style>div.stButton > button {width: 100%; height: 80px; border-radius: 12px; border: 1px solid #ddd; background-color: #f8f9fa; color: #333; font-weight: bold; font-size: 14px; transition: all 0.3s ease; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);} div.stButton > button:hover {background-color: #e2e6ea; border-color: #adb5bd; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1);} div.stButton > button:active { background-color: #dae0e5; transform: translateY(0); }</style>""", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.button("🏠 Việc Của Tôi", on_click=change_menu, args=("🏠 Việc Của Tôi",))
+        st.button("📝 Tạo Hồ Sơ", on_click=change_menu, args=("📝 Tạo Hồ Sơ",))
+        if role == "Quản lý":
+             st.button("💰 Công Nợ", on_click=change_menu, args=("💰 Công Nợ",))
+             st.button("🗑️ Thùng Rác", on_click=change_menu, args=("🗑️ Thùng Rác",))
+    with c2:
+        st.button("🔍 Tra Cứu", on_click=change_menu, args=("🔍 Tra Cứu",))
+        st.button("📊 Báo Cáo", on_click=change_menu, args=("📊 Báo Cáo",))
+        if role == "Quản lý":
+            st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
+            st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
+
+# --- 3. HÀM HỖ TRỢ & KẾT NỐI ---
 def safe_int(value):
-    try:
-        if pd.notna(value) and value != "":
-            return int(float(str(value).replace(",", "").replace(".", "")))
-        return 0
+    try: return int(float(str(value).replace(",", "").replace(".", ""))) if pd.notna(value) and value != "" else 0
     except: return 0
 
 def get_proc_abbr(proc_name):
-    mapping = {"Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ", "Tách thửa": "TT"}
-    return mapping.get(proc_name, "K")
+    return {"Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ", "Tách thửa": "TT"}.get(proc_name, "K")
 
 def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
@@ -59,8 +96,7 @@ def check_bottleneck(logs, current_stage):
 
 def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
     try:
-        jid_str = str(jid)
-        seq = jid_str[-2:] 
+        jid_str = str(jid); seq = jid_str[-2:] 
         d_obj = datetime.strptime(str(start_time), "%Y-%m-%d %H:%M:%S")
         date_str = d_obj.strftime('%d%m%y')
     except: date_str = "000000"; seq = "00"
@@ -77,68 +113,46 @@ def extract_files_from_log(log_text):
         return [("File cũ", l) for l in raw_links]
     return matches
 
-def render_contact_buttons(phone):
-    if not phone: return ""
-    clean_phone = re.sub(r'\D', '', str(phone))
-    if len(clean_phone) < 9: return f"<span style='color: gray;'>SĐT: {phone}</span>"
-    zalo_link = f"https://zalo.me/{clean_phone}"
-    call_link = f"tel:{clean_phone}"
-    return f"""<div style="display: flex; gap: 10px; margin-bottom: 10px;"><a href="{zalo_link}" target="_blank" style="text-decoration: none;"><div style="background-color: #0068FF; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">💬 Chat Zalo</div></a><a href="{call_link}" style="text-decoration: none;"><div style="background-color: #28a745; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">📞 Gọi Điện</div></a></div>"""
-
 def calculate_deadline(start_date, hours_to_add):
     if hours_to_add == 0: return None
-    current_date = start_date
-    added_hours = 0
+    current_date = start_date; added_hours = 0
     while added_hours < hours_to_add:
         current_date += timedelta(hours=1)
         if current_date.weekday() < 5: added_hours += 1
     return current_date
 
 def get_drive_id(link):
-    try: 
-        match = re.search(r'/d/([a-zA-Z0-9_-]+)', link)
-        return match.group(1) if match else None
+    try: match = re.search(r'/d/([a-zA-Z0-9_-]+)', link); return match.group(1) if match else None
     except: return None
 
 def get_gcp_creds(): 
     return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
 
 def get_sheet(sheet_name="DB_DODAC"):
-    try: 
-        creds = get_gcp_creds()
-        client = gspread.authorize(creds)
-        return client.open(sheet_name).sheet1
+    try: creds = get_gcp_creds(); client = gspread.authorize(creds); return client.open(sheet_name).sheet1
     except: return None
 
 def get_users_sheet():
     try:
-        creds = get_gcp_creds()
-        client = gspread.authorize(creds)
-        sh = client.open("DB_DODAC")
+        creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC")
         try: return sh.worksheet("USERS")
         except: 
             ws = sh.add_worksheet(title="USERS", rows="100", cols="5")
-            ws.append_row(["username", "password", "fullname", "role"])
-            return ws
+            ws.append_row(["username", "password", "fullname", "role"]); return ws
     except: return None
 
 def get_audit_sheet():
     try:
-        creds = get_gcp_creds()
-        client = gspread.authorize(creds)
-        sh = client.open("DB_DODAC")
+        creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC")
         try: return sh.worksheet("AUDIT_LOGS")
         except: 
             ws = sh.add_worksheet(title="AUDIT_LOGS", rows="1000", cols="4")
-            ws.append_row(["Timestamp", "User", "Action", "Details"])
-            return ws
+            ws.append_row(["Timestamp", "User", "Action", "Details"]); return ws
     except: return None
 
 def log_to_audit(user, action, details):
     def _log():
-        try: 
-            ws = get_audit_sheet()
-            if ws: ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user, action, details])
+        try: ws = get_audit_sheet(); ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user, action, details])
         except: pass
     threading.Thread(target=_log).start()
 
@@ -156,9 +170,7 @@ def upload_to_drive(file_obj, sub_folder_name):
     return None, None
 
 def find_row_index(sh, jid):
-    try: 
-        ids = sh.col_values(1)
-        return ids.index(str(jid)) + 1
+    try: ids = sh.col_values(1); return ids.index(str(jid)) + 1
     except: return None
 
 def delete_file_system(job_id, file_link, file_name, user):
@@ -166,10 +178,10 @@ def delete_file_system(job_id, file_link, file_name, user):
     if file_id:
         try: requests.post(APPS_SCRIPT_URL, json={"action": "delete", "file_id": file_id})
         except: pass
-    sh = get_sheet()
-    r = find_row_index(sh, job_id)
+    sh = get_sheet(); r = find_row_index(sh, job_id)
     if r:
         current_log = sh.cell(r, 11).value
+        # Dùng regex để xóa chính xác hơn
         new_log = re.sub(r"(\s*\|\s*)?File: .*? - " + re.escape(file_link), "", str(current_log))
         sh.update_cell(r, 11, new_log)
         if sh.cell(r, 10).value == file_link: sh.update_cell(r, 10, "")
@@ -181,60 +193,46 @@ def send_telegram_msg(msg):
     if not TELEGRAM_TOKEN: return
     def run(): 
         try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"})
-        except: pass
+        except Exception as e: print(f"Tele Error: {e}")
     threading.Thread(target=run).start()
 
 def login_user(u, p):
-    sh = get_users_sheet()
+    sh = get_users_sheet(); 
     if not sh: return None
-    try: 
-        cell = sh.find(u)
-        row = sh.row_values(cell.row)
-        return row if row[1] == make_hash(p) else None
+    try: cell = sh.find(u); row = sh.row_values(cell.row); return row if row[1] == make_hash(p) else None
     except: return None
 
 def create_user(u, p, n):
     if not re.match(r'^[a-zA-Z0-9_]+$', u): return False
-    sh = get_users_sheet()
+    sh = get_users_sheet(); 
     if not sh: return False
     try: 
         if sh.find(u): return False
-        sh.append_row([u, make_hash(p), n, "Chưa cấp quyền"])
-        get_all_users_cached.clear()
-        return True
+        sh.append_row([u, make_hash(p), n, "Chưa cấp quyền"]); get_all_users_cached.clear(); return True
     except: return False
 
 def delete_user_permanently(u):
     sh = get_users_sheet()
-    try: 
-        cell = sh.find(u)
-        sh.delete_rows(cell.row)
-        get_all_users_cached.clear()
-        return True
+    try: cell = sh.find(u); sh.delete_rows(cell.row); get_all_users_cached.clear(); return True
     except: return False
 
 @st.cache_data(ttl=60)
 def get_all_users_cached():
     sh = get_users_sheet()
-    return pd.DataFrame(sh.get_all_records()) if sh else pd.DataFrame()
+    if sh is None: return pd.DataFrame()
+    return pd.DataFrame(sh.get_all_records())
 
 def get_all_users(): return get_all_users_cached()
-def update_user_role(u, r): 
-    sh = get_users_sheet()
-    c = sh.find(u)
-    sh.update_cell(c.row, 4, r)
-    get_all_users_cached.clear()
-
+def update_user_role(u, r): sh = get_users_sheet(); c = sh.find(u); sh.update_cell(c.row, 4, r); get_all_users_cached.clear()
 def get_active_users_list(): 
     df = get_all_users_cached()
     if df.empty: return []
     return df[df['role']!='Chưa cấp quyền'].apply(lambda x: f"{x['username']} - {x['fullname']}", axis=1).tolist()
 
 def get_all_jobs_df():
-    sh = get_sheet()
+    sh = get_sheet(); 
     if sh is None: return pd.DataFrame()
-    data = sh.get_all_records()
-    df = pd.DataFrame(data)
+    data = sh.get_all_records(); df = pd.DataFrame(data)
     if not df.empty:
         df['id'] = df['id'].apply(safe_int)
         if 'deposit' not in df.columns: df['deposit'] = 0
@@ -245,9 +243,7 @@ def get_all_jobs_df():
     return df
 
 def get_daily_sequence_id():
-    df = get_all_jobs_df()
-    now = datetime.now()
-    prefix = int(now.strftime('%y%m%d')) 
+    df = get_all_jobs_df(); now = datetime.now(); prefix = int(now.strftime('%y%m%d')) 
     if df.empty: return int(f"{prefix}01"), "01"
     today_ids = [str(jid) for jid in df['id'].tolist() if str(jid).startswith(str(prefix))]
     if not today_ids: seq = 1
@@ -280,7 +276,7 @@ if 'scheduler_started' not in st.session_state:
     threading.Thread(target=run_schedule_check, daemon=True).start()
     st.session_state['scheduler_started'] = True
 
-# --- LOGIC ADD/UPDATE ---
+# --- 4. LOGIC NGHIỆP VỤ ---
 def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount):
     sh = get_sheet(); now = datetime.now(); now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     jid, seq_str = get_daily_sequence_id()
@@ -314,7 +310,7 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
         log_file_str = ""
         if f_list:
             for uploaded_file in f_list:
-                l, n_f = upload_to_drive(uploaded_file, full_code)
+                l, n_f = upload_to_drive(uploaded_file, full_code); 
                 if l: log_file_str += f" | File: {n_f} - {l}"
         nxt = "8. Hoàn thành" if is_survey==1 and stg=="4. Làm hồ sơ" else WORKFLOW_DEFAULT.get(stg)
         if nxt:
@@ -427,26 +423,7 @@ def scan_bottlenecks(df):
             bottlenecks.append(f"⚠️ **{name}**\n- Kẹt ở: {j['current_stage']}\n- Thời gian: {hours}h (Giới hạn: {limit}h)")
     return bottlenecks
 
-# --- UI & MENU ---
-def change_menu(new_menu):
-    st.session_state['menu_selection'] = new_menu
-
-def render_square_menu(role):
-    st.markdown("""<style>div.stButton > button {width: 100%; height: 80px; border-radius: 12px; border: 1px solid #ddd; background-color: #f8f9fa; color: #333; font-weight: bold; font-size: 14px; transition: all 0.3s ease; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);} div.stButton > button:hover {background-color: #e2e6ea; border-color: #adb5bd; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1);} div.stButton > button:active { background-color: #dae0e5; transform: translateY(0); }</style>""", unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-    with c1:
-        st.button("🏠 Việc Của Tôi", on_click=change_menu, args=("🏠 Việc Của Tôi",))
-        st.button("📝 Tạo Hồ Sơ", on_click=change_menu, args=("📝 Tạo Hồ Sơ",))
-        if role == "Quản lý":
-             st.button("💰 Công Nợ", on_click=change_menu, args=("💰 Công Nợ",))
-             st.button("🗑️ Thùng Rác", on_click=change_menu, args=("🗑️ Thùng Rác",))
-    with c2:
-        st.button("🔍 Tra Cứu", on_click=change_menu, args=("🔍 Tra Cứu",))
-        st.button("📊 Báo Cáo", on_click=change_menu, args=("📊 Báo Cáo",))
-        if role == "Quản lý":
-            st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
-            st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
-
+# --- UI COMPONENTS & RENDER ---
 def render_job_card(j, user, role, user_list):
     proc_name = extract_proc_from_log(j['logs'])
     code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
@@ -561,8 +538,8 @@ def render_job_card(j, user, role, user_list):
             for log_line in raw_logs:
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
-# --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V23.2", page_icon="☁️", layout="wide")
+# --- 8. UI MAIN ---
+st.set_page_config(page_title="Đo Đạc Cloud V23.3", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
@@ -740,17 +717,16 @@ else:
             st.title("Phân Quyền"); df = get_all_users()
             for i, u in df.iterrows():
                 with st.container(border=True):
-                    c1, c2 = st.columns([0.7, 0.3])
-                    with c1:
-                        st.subheader(f"👤 {u['fullname']}")
-                        st.caption(f"User: {u['username']}")
+                    c1, c2, c3 = st.columns([0.6, 0.3, 0.1])
+                    with c1: st.subheader(f"👤 {u['fullname']}"); st.caption(f"User: {u['username']}")
                     with c2:
                         if u['username']!=user:
-                            idx = ROLES.index(u['role']) if u['role'] in ROLES else 2
-                            nr = st.selectbox("", ROLES, index=idx, key=u['username'], label_visibility="collapsed")
+                            idx = ROLES.index(u['role']) if u['role'] in ROLES else 2; nr = st.selectbox("", ROLES, index=idx, key=u['username'], label_visibility="collapsed")
                             if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Đã lưu!"); time.sleep(0.5); st.rerun()
-                            if st.button("🗑️ Xóa", key=f"del_u_{u['username']}"): delete_user_permanently(u['username']); st.rerun()
                         else: st.info("Admin")
+                    with c3:
+                        if u['username']!=user:
+                            if st.button("🗑️", key=f"del_u_{u['username']}"): delete_user_permanently(u['username']); st.rerun()
         else: st.error("Cấm truy cập!")
 
     elif sel == "🗑️ Thùng Rác":
