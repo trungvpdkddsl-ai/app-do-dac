@@ -105,8 +105,7 @@ def format_precise_time(td):
     if days > 0: parts.append(f"{days} ngày")
     if hours > 0: parts.append(f"{hours} giờ")
     parts.append(f"{minutes} phút")
-    if not parts: return "0 phút"
-    return f"{sign}{' '.join(parts)}"
+    return f"{sign}{' '.join(parts)}" if parts else "0 phút"
 
 def get_processing_duration(logs, current_stage):
     if current_stage == "8. Hoàn thành" or not logs: return timedelta(0), None
@@ -130,7 +129,7 @@ def calculate_deadline(start_date, hours_to_add):
     current_date = start_date; added_hours = 0
     while added_hours < hours_to_add:
         current_date += timedelta(hours=1)
-        if current_date.weekday() < 5: added_hours += 1 # T2-T6
+        if current_date.weekday() < 5: added_hours += 1
     return current_date
 
 def get_drive_id(link):
@@ -162,20 +161,21 @@ def get_audit_sheet():
             ws.append_row(["Timestamp", "User", "Action", "Details"]); return ws
     except: return None
 
-# [HÀM UPLOAD DUY NHẤT - CHẠY QUA APPS SCRIPT]
+# [HÀM UPLOAD KHÔNG DÙNG SERVICE ACCOUNT - FIX LỖI 403]
 def upload_file_via_script(file_obj, sub_folder_name):
     if not file_obj: return None, None
     try:
         file_content = file_obj.read()
         file_base64 = base64.b64encode(file_content).decode('utf-8')
         payload = {"filename": file_obj.name, "mime_type": file_obj.type, "file_base64": file_base64, "folder_id": DRIVE_FOLDER_ID, "sub_folder_name": sub_folder_name}
+        # Gửi qua Script -> Không bao giờ lỗi Quota
         response = requests.post(APPS_SCRIPT_URL, json=payload)
         if response.status_code == 200:
             res_json = response.json()
             if res_json.get("status") == "success": return res_json.get("link"), file_obj.name
             else: st.error(f"Lỗi Script: {res_json.get('message')}")
         else: st.error(f"Lỗi mạng: {response.text}")
-    except Exception as e: st.error(f"Lỗi Upload: {e}")
+    except Exception as e: st.error(f"Lỗi Python: {e}")
     return None, None
 
 def find_row_index(sh, jid):
@@ -293,25 +293,26 @@ def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount, schedul
     jid, seq_str = get_daily_sequence_id()
     phone_db = f"'{p}" 
     full_name_str = generate_unique_name(jid, now_str, n, p, a, proc)
-    
-    # Upload File
     link = ""; fname = ""; log_file_str = ""
-    if f: 
-        with st.status("Đang khởi tạo hồ sơ và upload file...") as status:
+    
+    # Upload xử lý trạng thái
+    if f:
+        with st.status("Đang khởi tạo và upload file...") as status:
             for uploaded_file in f:
                 l, n_f = upload_file_via_script(uploaded_file, full_name_str)
                 if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
-            status.update(label="Hoàn tất!", state="complete", expanded=False)
+            status.update(label="Upload thành công!", state="complete", expanded=False)
 
     schedule_note = ""
     if scheduled_date:
         start_count_time = datetime.combine(scheduled_date, datetime.min.time()).replace(hour=8)
+        # Tính deadline từ ngày hẹn
         next_step_key = "2. Đo đạc" if proc not in ["Cung cấp thông tin", "Đính chính"] else "4. Làm hồ sơ"
         dl_dt = calculate_deadline(start_count_time, STAGE_SLA_HOURS.get(next_step_key, 24))
         dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
         schedule_note = f" (Hẹn đo: {scheduled_date.strftime('%d/%m/%Y')})"
     else:
-        # Mặc định tạo mới (bước 1) không có deadline (hoặc xa)
+        # Mặc định tạo mới không có deadline (xa)
         dl_dt = now + timedelta(days=365) 
         dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -339,7 +340,7 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_file_str = ""
         if f_list:
-             with st.status("Đang cập nhật và upload file...") as status:
+            with st.status("Đang cập nhật và upload file...") as status:
                 for uploaded_file in f_list:
                     l, n_f = upload_file_via_script(uploaded_file, full_code); 
                     if l: log_file_str += f" | File: {n_f} - {l}"
@@ -461,11 +462,11 @@ def delete_forever(jid, u):
 def scan_bottlenecks(df):
     bottlenecks = []
     for _, j in df.iterrows():
-        is_stuck, hours, limit = check_bottleneck(j['deadline'], j['current_stage']) # Use deadline check
+        is_stuck, hours, limit = check_bottleneck(j['deadline'], j['current_stage'])
         if is_stuck and j['status'] == "Đang xử lý":
             proc_name = extract_proc_from_log(j['logs'])
             name = generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", proc_name)
-            bottlenecks.append(f"⚠️ **{name}**\n- Kẹt ở: {j['current_stage']}\n- Quá hạn: {hours}h")
+            bottlenecks.append(f"⚠️ **{name}**\n- Kẹt ở: {j['current_stage']}\n- Thời gian: {hours}h (Giới hạn: {limit}h)")
     return bottlenecks
 
 # --- UI COMPONENTS & RENDER ---
@@ -519,23 +520,19 @@ def render_job_card(j, user, role, user_list):
     dl_str = dl_dt.strftime("%d/%m/%Y %H:%M")
     time_left = dl_dt - now
     
-    # [FIX] Màu sắc bước 1. Tạo mới -> Xanh dương, Không báo hạn
-    if j['current_stage'] == "1. Tạo mới":
-        icon = "🔵"
-        dl_status = "Đang chờ xử lý"
-    elif j['status'] in ['Tạm dừng', 'Kết thúc sớm', 'Đã xóa']:
-        icon = "⛔"; dl_status = j['status']
-    elif 'Hẹn đo:' in str(j['logs']) and time_left.days > 1:
-        icon = "⚪"; dl_status = f"⏳ CHỜ ĐẾN HẸN (Hạn: {dl_str})"
-    elif time_left.total_seconds() < 0:
-        icon = "🔴"; dl_status = f"QUÁ HẠN {format_precise_time(time_left)}"
-    elif time_left.total_seconds() < 172800: 
-        icon = "🟡"; dl_status = f"Còn {format_precise_time(time_left)}"
+    if j['current_stage'] in ["1. Tạo mới", "8. Hoàn thành"]: icon = "🟢"; time_info = ""
     else:
-        icon = "🟢"; dl_status = f"Còn {format_precise_time(time_left)}"
-    
-    time_info = f"📅 **Hạn: {dl_str}** | Trạng thái: **{dl_status}**"
-    if j['current_stage'] == "1. Tạo mới": time_info = "" # Ẩn hạn nếu là tạo mới
+        if j['status'] in ['Tạm dừng', 'Kết thúc sớm', 'Đã xóa']:
+             icon = "⛔"; dl_status = j['status']
+        elif 'Hẹn đo:' in str(j['logs']) and time_left.days > 1:
+             icon = "⚪"; dl_status = f"⏳ CHỜ ĐẾN HẸN (Hạn: {dl_str})"
+        elif time_left.total_seconds() < 0:
+             icon = "🔴"; dl_status = f"QUÁ HẠN {format_precise_time(time_left)}"
+        elif time_left.total_seconds() < 172800: 
+             icon = "🟡"; dl_status = f"Còn {format_precise_time(time_left)}"
+        else:
+             icon = "🟢"; dl_status = f"Còn {format_precise_time(time_left)}"
+        time_info = f"📅 **Hạn: {dl_str}** | Trạng thái: **{dl_status}**"
 
     elapsed_delta, start_stage_dt = get_processing_duration(j['logs'], j['current_stage'])
     elapsed_str = format_precise_time(elapsed_delta)
@@ -598,9 +595,10 @@ def render_job_card(j, user, role, user_list):
             else:
                 with st.form(f"f{j['id']}"):
                     nt = st.text_area("Ghi chú")
-                    fl = st.file_uploader("Upload File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
-                    cur = j['current_stage']; 
+                    fl = st.file_uploader("Upload File", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
+                    
                     # [FIX] Lấy bước tiếp theo động
+                    cur = j['current_stage']
                     nxt = get_next_stage_dynamic(cur, proc_name)
                     if not nxt: nxt = "8. Hoàn thành"
 
@@ -650,7 +648,7 @@ def render_job_card(j, user, role, user_list):
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
 # --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V27.1", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V28", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
@@ -744,16 +742,24 @@ else:
             with c3: is_sv = st.checkbox("🛠️ CHỈ ĐO ĐẠC")
             with c4: proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
             st.markdown("---")
-            # [ĐÃ KHÔI PHỤC] Lựa chọn hẹn giờ
-            is_scheduled = st.checkbox("📅 Hẹn ngày đo sau (Không tính thời gian ngay)")
-            sch_date = None
-            if is_scheduled:
-                sch_date = st.date_input("Ngày khách hẹn đi đo", datetime.now() + timedelta(days=1))
-                st.info(f"Hồ sơ sẽ ở trạng thái chờ. Quy trình 24h sẽ bắt đầu tính từ ngày {sch_date.strftime('%d/%m/%Y')}.")
+            
+            # [FIX UI HẸN GIỜ] Hiển thị ngay bên ngoài
+            cols_sch = st.columns([0.4, 0.6])
+            with cols_sch[0]: 
+                is_scheduled = st.checkbox("📅 Hẹn ngày đo sau")
+            with cols_sch[1]:
+                sch_date = None
+                if is_scheduled:
+                    sch_date = st.date_input("Chọn ngày hẹn:", datetime.now() + timedelta(days=1), label_visibility="collapsed")
+            
+            if is_scheduled and sch_date:
+                st.info(f"Hồ sơ sẽ ở trạng thái chờ. Quy trình 24h sẽ bắt đầu tính từ 08:00 ngày {sch_date.strftime('%d/%m/%Y')}.")
             
             f = st.file_uploader("File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"new_up_{st.session_state['uploader_key']}")
             st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
             asn = st.selectbox("Giao:", user_list)
+            
+            # Nút tạo hồ sơ
             if st.form_submit_button("Tạo Hồ Sơ"):
                 if n and asn: 
                     add_job(n, p, a, proc, f, user, asn, is_sv, dep_ok, fee_val, sch_date)
