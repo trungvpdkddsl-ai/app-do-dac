@@ -28,7 +28,7 @@ WORKFLOW_DEFAULT = {
 }
 STAGE_SLA_HOURS = {"1. Tạo mới": 0, "2. Đo đạc": 48, "3. Hoàn thiện trích đo": 24, "4. Làm hồ sơ": 24, "5. Ký hồ sơ": 72, "6. Lấy hồ sơ": 24, "7. Nộp hồ sơ": 360}
 
-# --- 2. HÀM HỖ TRỢ & KẾT NỐI ---
+# --- 2. HÀM HỖ TRỢ ---
 def safe_int(value):
     try: return int(float(str(value).replace(",", "").replace(".", ""))) if pd.notna(value) and value != "" else 0
     except: return 0
@@ -91,6 +91,7 @@ def get_drive_id(link):
     try: match = re.search(r'/d/([a-zA-Z0-9_-]+)', link); return match.group(1) if match else None
     except: return None
 
+# --- GSPREAD & AUTH ---
 def get_gcp_creds(): 
     return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
 
@@ -116,6 +117,7 @@ def get_audit_sheet():
             ws.append_row(["Timestamp", "User", "Action", "Details"]); return ws
     except: return None
 
+# --- LOGIC & UPLOAD ---
 def log_to_audit(user, action, details):
     def _log():
         try: ws = get_audit_sheet(); ws.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user, action, details])
@@ -209,20 +211,16 @@ def get_daily_sequence_id():
     else: max_seq = max([int(jid[-2:]) for jid in today_ids]); seq = max_seq + 1
     return int(f"{prefix}{seq:02}"), f"{seq:02}"
 
-# --- 3. BACKGROUND SCHEDULER (BÁO CÁO TỰ ĐỘNG) ---
 def run_schedule_check():
     while True:
         now = datetime.now()
-        # Chạy vào 8h và 13h (cho phép trễ 5p)
         if (now.hour == 8 or now.hour == 13) and now.minute < 5:
             try:
                 df = get_all_jobs_df()
                 if not df.empty:
                     active_df = df[df['status'] != 'Đã xóa']
                     active_df['dl_dt'] = pd.to_datetime(active_df['deadline'], errors='coerce')
-                    # Lọc hồ sơ còn hạn dưới 24h và chưa quá hạn
                     urgent = active_df[(active_df['dl_dt'] > now) & (active_df['dl_dt'] <= now + timedelta(hours=24))]
-                    
                     if not urgent.empty:
                         msg_list = []
                         for _, j in urgent.iterrows():
@@ -230,32 +228,26 @@ def run_schedule_check():
                             name = generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", p_name)
                             left = int((j['dl_dt'] - now).total_seconds() / 3600)
                             msg_list.append(f"🔸 <b>{name}</b> (Còn {left}h) - {j['assigned_to']}")
-                        
-                        final_msg = f"⏰ <b>CẢNH BÁO SẮP HẾT HẠN ({len(msg_list)} hồ sơ):</b>\n\n" + "\n".join(msg_list)
-                        send_telegram_msg(final_msg)
-                        time.sleep(300) # Ngủ 5p để không gửi lặp lại trong khung giờ này
+                        send_telegram_msg(f"⏰ <b>CẢNH BÁO 24H ({len(msg_list)} hồ sơ):</b>\n\n" + "\n".join(msg_list))
+                        time.sleep(300)
             except: pass
-        time.sleep(60) # Check mỗi phút
+        time.sleep(60)
 
-# Khởi động luồng ngầm (Chỉ chạy 1 lần)
 if 'scheduler_started' not in st.session_state:
     threading.Thread(target=run_schedule_check, daemon=True).start()
     st.session_state['scheduler_started'] = True
 
-# --- 4. LOGIC NGHIỆP VỤ CHÍNH ---
-def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
+# --- LOGIC ADD/UPDATE ---
+def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount):
     sh = get_sheet(); now = datetime.now(); now_str = now.strftime("%Y-%m-%d %H:%M:%S")
-    date_code = now.strftime('%d%m%Y'); dl_dt = calculate_deadline(now, d); dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S") if dl_dt else ""
     jid, seq_str = get_daily_sequence_id()
     phone_db = f"'{p}" 
     full_name_str = generate_unique_name(jid, now_str, n, p, a, proc)
-    
     link = ""; fname = ""; log_file_str = ""
     if f: 
         for uploaded_file in f:
             l, n_f = upload_to_drive(uploaded_file, full_name_str)
             if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
-
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
     log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{log_file_str}"
     asn_clean = asn.split(" - ")[0] if asn else ""
@@ -263,7 +255,6 @@ def add_job(n, p, a, proc, f, u, asn, d, is_survey, deposit_ok, fee_amount):
     dl = (now + timedelta(days=365)).strftime("%Y-%m-%d %H:%M:%S")
     sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
-    
     type_msg = f"({proc.upper()})"
     money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
     file_msg = f"\n📎 Có {len(f)} file đính kèm" if f else ""
@@ -282,7 +273,6 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
             for uploaded_file in f_list:
                 l, n_f = upload_to_drive(uploaded_file, full_code); 
                 if l: log_file_str += f" | File: {n_f} - {l}"
-
         nxt = "8. Hoàn thành" if is_survey==1 and stg=="4. Làm hồ sơ" else WORKFLOW_DEFAULT.get(stg)
         if nxt:
             sh.update_cell(r, 6, nxt)
@@ -290,14 +280,12 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
             if asn: 
                 assign_clean = asn.split(" - ")[0]; sh.update_cell(r, 8, assign_clean)
                 assign_str = f" -> Giao: {assign_clean}"; assign_tele = f"\n👉 Giao: <b>{assign_clean}</b>"
-            
             if result_date:
                 new_deadline = result_date.strftime("%Y-%m-%d %H:%M:%S")
                 sh.update_cell(r, 9, new_deadline); nt += f" (Hẹn trả: {result_date.strftime('%d/%m/%Y')})"
             else:
                 new_dl = calculate_deadline(datetime.now(), STAGE_SLA_HOURS.get(nxt, 24))
                 if new_dl: sh.update_cell(r, 9, new_dl.strftime("%Y-%m-%d %H:%M:%S"))
-            
             sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
             olog = sh.cell(r, 11).value
             nlog = f"\n[{now}] {u}: {stg}->{nxt}{assign_str} | Note: {nt}{log_file_str}"
@@ -349,8 +337,7 @@ def pause_job(jid, rs, u):
     if r:
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
-        sh.update_cell(r, 7, "Tạm dừng")
-        olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
+        sh.update_cell(r, 7, "Tạm dừng"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
         log_to_audit(u, "PAUSE_JOB", f"ID: {jid}")
         send_telegram_msg(f"⛔ <b>TẠM DỪNG</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
@@ -359,8 +346,7 @@ def resume_job(jid, u):
     if r:
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
-        sh.update_cell(r, 7, "Đang xử lý")
-        olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
+        sh.update_cell(r, 7, "Đang xử lý"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
         log_to_audit(u, "RESUME_JOB", f"ID: {jid}")
         send_telegram_msg(f"▶️ <b>KHÔI PHỤC</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}")
 
@@ -369,8 +355,7 @@ def terminate_job(jid, rs, u):
     if r:
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
-        sh.update_cell(r, 7, "Kết thúc sớm")
-        olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
+        sh.update_cell(r, 7, "Kết thúc sớm"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
         log_to_audit(u, "TERMINATE_JOB", f"ID: {jid}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
@@ -396,21 +381,41 @@ def scan_bottlenecks(df):
             bottlenecks.append(f"⚠️ **{name}**\n- Kẹt ở: {j['current_stage']}\n- Thời gian: {hours}h (Giới hạn: {limit}h)")
     return bottlenecks
 
-# --- 5. UI COMPONENTS ---
-def render_progress_bar(current_stage, status):
-    try: idx = STAGES_ORDER.index(current_stage)
-    except: idx = 0
-    color = "#dc3545" if status in ["Tạm dừng", "Kết thúc sớm", "Đã xóa"] else "#ffc107"
-    st.markdown(f"""<style>.step-container {{display: flex; justify-content: space-between; margin-bottom: 15px;}} .step-item {{flex: 1; text-align: center; position: relative;}} .step-item:not(:last-child)::after {{content: ''; position: absolute; top: 15px; left: 50%; width: 100%; height: 2px; background: #e0e0e0; z-index: -1;}} .step-circle {{width: 30px; height: 30px; margin: 0 auto 5px; border-radius: 50%; line-height: 30px; color: white; font-weight: bold; font-size: 12px;}} .done {{background: #28a745;}} .active {{background: {color}; color: black;}} .pending {{background: #e9ecef; color: #999;}}</style>""", unsafe_allow_html=True)
-    h = '<div class="step-container">'; 
-    for i, s in enumerate(STAGES_ORDER):
-        cls = "done" if i < idx else "active" if i == idx else "pending"
-        ico = "✓" if i < idx else str(i+1)
-        if i == idx and status == "Tạm dừng": ico = "⛔"
-        if i == idx and status == "Kết thúc sớm": ico = "⏹️"
-        h += f'<div class="step-item"><div class="step-circle {cls}">{ico}</div><div style="font-size:11px">{s.split(". ")[1]}</div></div>'
-    st.markdown(h+'</div>', unsafe_allow_html=True)
+# --- RENDER SQUARE MENU (FIX LỖI BIẾN MẤT) ---
+def change_menu(new_menu):
+    st.session_state['menu_selection'] = new_menu
 
+def render_square_menu(role):
+    st.markdown("""
+    <style>
+    div.stButton > button {
+        width: 100%; height: 80px; border-radius: 12px; border: 1px solid #ddd;
+        background-color: #f8f9fa; color: #333; font-weight: bold; font-size: 14px;
+        transition: all 0.3s ease; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    div.stButton > button:hover {
+        background-color: #e2e6ea; border-color: #adb5bd; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    }
+    div.stButton > button:active { background-color: #dae0e5; transform: translateY(0); }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Dùng callback để giữ state
+    c1, c2 = st.columns(2)
+    with c1:
+        st.button("🏠 Việc Của Tôi", on_click=change_menu, args=("🏠 Việc Của Tôi",))
+        st.button("📝 Tạo Hồ Sơ", on_click=change_menu, args=("📝 Tạo Hồ Sơ",))
+        if role == "Quản lý":
+             st.button("💰 Công Nợ", on_click=change_menu, args=("💰 Công Nợ",))
+             st.button("🗑️ Thùng Rác", on_click=change_menu, args=("🗑️ Thùng Rác",))
+    with c2:
+        st.button("🔍 Tra Cứu", on_click=change_menu, args=("🔍 Tra Cứu",))
+        st.button("📊 Báo Cáo", on_click=change_menu, args=("📊 Báo Cáo",))
+        if role == "Quản lý":
+            st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
+            st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
+
+# --- RENDER JOB CARD ---
 def render_job_card(j, user, role, user_list):
     proc_name = extract_proc_from_log(j['logs'])
     code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
@@ -535,44 +540,13 @@ def render_job_card(j, user, role, user_list):
             for log_line in raw_logs:
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
-# [MỚI] UI MENU VUÔNG
-def render_square_menu(role):
-    st.markdown("""
-    <style>
-    div.stButton > button {
-        width: 100%; height: 80px; border-radius: 12px; border: 1px solid #ddd;
-        background-color: #f8f9fa; color: #333; font-weight: bold; font-size: 14px;
-        transition: all 0.3s ease; margin-bottom: 10px;
-    }
-    div.stButton > button:hover {
-        background-color: #e2e6ea; border-color: #adb5bd; transform: translateY(-2px);
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    cols = st.columns(2)
-    with cols[0]:
-        if st.button("🏠 Việc Của Tôi"): return "🏠 Việc Của Tôi"
-        if st.button("📝 Tạo Hồ Sơ"): return "📝 Tạo Hồ Sơ"
-        if role == "Quản lý":
-             if st.button("💰 Công Nợ"): return "💰 Công Nợ"
-             if st.button("🗑️ Thùng Rác"): return "🗑️ Thùng Rác"
-    with cols[1]:
-        if st.button("🔍 Tra Cứu"): return "🔍 Tra Cứu"
-        if st.button("📊 Báo Cáo"): return "📊 Báo Cáo"
-        if role == "Quản lý":
-            if st.button("👥 Nhân Sự"): return "👥 Nhân Sự"
-            if st.button("🛡️ Nhật Ký"): return "🛡️ Nhật Ký"
-    return st.session_state.get('menu_selection', "🏠 Việc Của Tôi")
-
-# --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V23", page_icon="☁️", layout="wide")
+# --- 8. UI MAIN ---
+st.set_page_config(page_title="Đo Đạc Cloud V1", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
 if 'menu_selection' not in st.session_state: st.session_state['menu_selection'] = "🏠 Việc Của Tôi"
 
-# [CHECK AUTO LOGIN]
 if 'user' in st.query_params and not st.session_state['logged_in']:
     saved_user = st.query_params['user']
     st.session_state['logged_in'] = True; st.session_state['user'] = saved_user
@@ -603,16 +577,32 @@ if not st.session_state['logged_in']:
 else:
     user = st.session_state['user']; role = st.session_state['role']
     
-    # SIDEBAR MENU
     with st.sidebar:
         st.title(f"👤 {user}"); st.info(f"{role}")
-        # Render Square Menu
-        st.markdown("---")
-        new_selection = render_square_menu(role)
-        if new_selection != st.session_state['menu_selection']:
-            st.session_state['menu_selection'] = new_selection
-            st.rerun()
         
+        # [MỚI] STICKY NOTE THÔNG BÁO 24H
+        df = get_all_jobs_df()
+        if not df.empty:
+            now = datetime.now()
+            active_df = df[df['status'] != 'Đã xóa']
+            active_df['dl_dt'] = pd.to_datetime(active_df['deadline'], errors='coerce')
+            
+            # Lọc hồ sơ còn < 24h
+            urgent = active_df[(active_df['dl_dt'] > now) & (active_df['dl_dt'] <= now + timedelta(hours=24))]
+            
+            if not urgent.empty:
+                st.warning(f"🔥 **GẤP: {len(urgent)} hồ sơ < 24h**")
+                if role == "Quản lý":
+                    # Admin xem tổng hợp
+                    counts = urgent['assigned_to'].value_counts()
+                    for u, c in counts.items(): st.caption(f"- {u}: {c}")
+                else:
+                    # Nhân viên chỉ xem của mình
+                    my_urgent = urgent[urgent['assigned_to'].str.contains(user, na=False)]
+                    if not my_urgent.empty: st.error(f"Bạn có {len(my_urgent)} hồ sơ gấp!")
+        
+        st.markdown("---")
+        render_square_menu(role)
         st.markdown("---")
         if st.button("Đăng xuất"): st.session_state['logged_in']=False; st.query_params.clear(); st.rerun()
 
@@ -621,7 +611,6 @@ else:
 
     if sel == "🏠 Việc Của Tôi":
         c_note, c_title = st.columns([1, 2])
-        df = get_all_jobs_df()
         if df.empty: 
             with c_title: st.title("📋 Tiến trình hồ sơ")
             st.info("Trống!")
@@ -682,7 +671,6 @@ else:
     elif sel == "💰 Công Nợ":
         st.title("💰 Quản Lý Công Nợ")
         try:
-            df = get_all_jobs_df()
             active_df = df[df['status'] != 'Đã xóa']
             if not active_df.empty:
                 unpaid = active_df[active_df['is_paid'].apply(safe_int) == 0]
@@ -701,7 +689,6 @@ else:
             with c_filter_2:
                 today = date.today(); first_day = today.replace(day=1)
                 date_range = st.date_input("📅 Khoảng thời gian", (first_day, today), format="DD/MM/YYYY")
-        df = get_all_jobs_df()
         active_df = df[df['status'] != 'Đã xóa']
         if not active_df.empty and 'start_dt' in active_df.columns:
             if isinstance(date_range, tuple) and len(date_range) == 2:
@@ -725,80 +712,41 @@ else:
         elif active_df.empty: st.info("Chưa có dữ liệu.")
 
     elif sel == "📊 Báo Cáo":
-        st.title("📊 Dashboard Quản Trị")
-        df = get_all_jobs_df()
+        st.title("📊 Báo Cáo & Thống Kê")
         active_df = df[df['status'] != 'Đã xóa']
         if not active_df.empty:
-            tab1, tab2, tab3 = st.tabs(["📈 Tổng Quan", "🏆 KPI Nhân Viên", "⚠️ Điểm Nghẽn"])
-            with tab1:
-                col_d1, col_d2 = st.columns(2)
-                today = date.today(); first_day = today.replace(day=1)
-                start_d = col_d1.date_input("Từ ngày", first_day); end_d = col_d2.date_input("Đến ngày", today)
-                active_df['start_dt'] = pd.to_datetime(active_df['start_time']).dt.date
-                mask = (active_df['start_dt'] >= start_d) & (active_df['start_dt'] <= end_d)
-                filtered_df = active_df.loc[mask]
-                if filtered_df.empty: st.warning("Không có dữ liệu.")
-                else:
-                    total_jobs = len(filtered_df)
-                    total_revenue = filtered_df['survey_fee'].apply(safe_int).sum()
-                    total_unpaid = filtered_df[filtered_df['is_paid'].apply(safe_int) == 0]['survey_fee'].apply(safe_int).sum()
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("Tổng Hồ Sơ", total_jobs, border=True)
-                    k2.metric("Doanh Thu", f"{total_revenue:,} đ", border=True)
-                    k3.metric("Công Nợ", f"{total_unpaid:,} đ", delta_color="inverse", border=True)
-                    st.subheader("Tiến độ hồ sơ")
-                    stage_counts = filtered_df['current_stage'].value_counts()
-                    for stage in STAGES_ORDER:
-                        count = stage_counts.get(stage, 0)
-                        if count > 0:
-                            pct = (count / total_jobs); c_lab, c_bar = st.columns([1, 3])
-                            c_lab.write(f"**{stage}**: {count} ({int(pct*100)}%)"); c_bar.progress(pct)
-            
-            # [NÂNG CẤP KPI]
-            with tab2:
-                st.subheader("🏆 Hiệu Suất Nhân Viên")
-                # Tạo bảng pivot: Cột là các bước, Hàng là nhân viên
-                # Chỉ đếm hồ sơ ĐANG CHẠY (chưa hoàn thành, chưa kết thúc)
-                running_jobs = active_df[~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
-                
-                if not running_jobs.empty:
-                    # Tạo khung dữ liệu KPI
-                    kpi_data = []
-                    users = get_active_users_list()
-                    
-                    for u in users:
-                        u_jobs = running_jobs[running_jobs['assigned_to'] == u]
-                        row = {"Nhân viên": u, "TỔNG ĐANG LÀM": len(u_jobs)}
-                        
-                        # Đếm từng khâu
-                        for stage in STAGES_ORDER:
-                            count = len(u_jobs[u_jobs['current_stage'] == stage])
-                            row[stage] = count if count > 0 else "-" # Để dấu - cho dễ nhìn
-                            
-                        kpi_data.append(row)
-                    
-                    st.dataframe(pd.DataFrame(kpi_data), use_container_width=True)
-                else:
-                    st.info("Hiện không có hồ sơ nào đang xử lý.")
-
-            with tab3:
-                st.subheader("⚠️ Hồ Sơ Đang Bị Kẹt (Bottlenecks)")
-                stuck_df = []
-                running_jobs = active_df[~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
-                for _, j in running_jobs.iterrows():
-                    is_stuck, hours, limit = check_bottleneck(j['logs'], j['current_stage'])
-                    if is_stuck:
-                        stuck_df.append({
-                            "Mã Hồ Sơ": generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", ""),
-                            "Đang ở bước": j['current_stage'],
-                            "Người giữ": j['assigned_to'],
-                            "Đã ngâm": f"{hours} giờ",
-                            "Quy định": f"{limit} giờ"
-                        })
-                if stuck_df:
-                    st.error(f"Phát hiện {len(stuck_df)} điểm nghẽn trong quy trình!")
-                    st.dataframe(pd.DataFrame(stuck_df), use_container_width=True)
-                else: st.success("Hệ thống vận hành trơn tru, không có điểm nghẽn.")
+            col_d1, col_d2 = st.columns(2)
+            today = date.today(); first_day = today.replace(day=1)
+            start_d = col_d1.date_input("Từ ngày", first_day); end_d = col_d2.date_input("Đến ngày", today)
+            active_df['start_dt'] = pd.to_datetime(active_df['start_time']).dt.date
+            mask = (active_df['start_dt'] >= start_d) & (active_df['start_dt'] <= end_d)
+            filtered_df = active_df.loc[mask]
+            st.divider()
+            if filtered_df.empty: st.warning("Không có dữ liệu.")
+            else:
+                total_jobs = len(filtered_df)
+                total_revenue = filtered_df['survey_fee'].apply(safe_int).sum()
+                total_unpaid = filtered_df[filtered_df['is_paid'].apply(safe_int) == 0]['survey_fee'].apply(safe_int).sum()
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Tổng Hồ Sơ", total_jobs, border=True)
+                k2.metric("Doanh Thu", f"{total_revenue:,} đ", border=True)
+                k3.metric("Công Nợ", f"{total_unpaid:,} đ", delta_color="inverse", border=True)
+                st.divider()
+                st.subheader("📌 Tỉ lệ hoàn thành")
+                stage_counts = filtered_df['current_stage'].value_counts()
+                for stage in STAGES_ORDER:
+                    count = stage_counts.get(stage, 0)
+                    if count > 0:
+                        pct = (count / total_jobs); c_lab, c_bar = st.columns([1, 3])
+                        c_lab.write(f"**{stage}**: {count} ({int(pct*100)}%)"); c_bar.progress(pct)
+                st.divider()
+                st.subheader("📄 Danh sách chi tiết")
+                view_df = filtered_df.copy()
+                view_df['Mã Hồ Sơ'] = view_df.apply(lambda x: generate_unique_name(x['id'], x['start_time'], x['customer_name'], "", "", ""), axis=1)
+                view_df['Phí'] = view_df['survey_fee'].apply(lambda x: f"{safe_int(x):,} đ")
+                final_view = view_df[['Mã Hồ Sơ', 'customer_name', 'current_stage', 'assigned_to', 'Phí']]
+                final_view.columns = ['Mã', 'Khách', 'Tiến Độ', 'Người Xử Lý', 'Phí']
+                st.dataframe(final_view, use_container_width=True, hide_index=True)
             
     elif sel == "👥 Nhân Sự":
         if role == "Quản lý":
@@ -824,7 +772,8 @@ else:
             trash_df = df[df['status'] == 'Đã xóa']
             if trash_df.empty: st.success("Thùng rác trống!")
             else:
-                for i, j in trash_df.iterrows(): render_job_card(j, user, role, user_list)
+                for i, j in trash_df.iterrows():
+                    render_job_card(j, user, role, user_list)
         else: st.error("Cấm truy cập!")
 
     elif sel == "🛡️ Nhật Ký":
