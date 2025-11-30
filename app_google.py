@@ -28,7 +28,7 @@ WORKFLOW_DEFAULT = {
 }
 STAGE_SLA_HOURS = {"1. Tạo mới": 0, "2. Đo đạc": 48, "3. Hoàn thiện trích đo": 24, "4. Làm hồ sơ": 24, "5. Ký hồ sơ": 72, "6. Lấy hồ sơ": 24, "7. Nộp hồ sơ": 360}
 
-# --- 2. HÀM HỖ TRỢ GIAO DIỆN (ĐƯA LÊN ĐẦU ĐỂ TRÁNH LỖI) ---
+# --- 2. HÀM HỖ TRỢ GIAO DIỆN ---
 def render_progress_bar(current_stage, status):
     try: idx = STAGES_ORDER.index(current_stage)
     except: idx = 0
@@ -159,13 +159,10 @@ def log_to_audit(user, action, details):
 def upload_to_drive(file_obj, sub_folder_name):
     if not file_obj: return None, None
     try:
-        file_content = file_obj.read()
-        file_base64 = base64.b64encode(file_content).decode('utf-8')
+        file_content = file_obj.read(); file_base64 = base64.b64encode(file_content).decode('utf-8')
         payload = {"filename": file_obj.name, "mime_type": file_obj.type, "file_base64": file_base64, "folder_id": DRIVE_FOLDER_ID, "sub_folder_name": sub_folder_name}
         response = requests.post(APPS_SCRIPT_URL, json=payload)
-        if response.status_code == 200:
-            res_json = response.json()
-            if res_json.get("status") == "success": return res_json.get("link"), file_obj.name
+        if response.status_code == 200 and response.json().get("status") == "success": return response.json().get("link"), file_obj.name
     except: pass
     return None, None
 
@@ -175,13 +172,10 @@ def find_row_index(sh, jid):
 
 def delete_file_system(job_id, file_link, file_name, user):
     file_id = get_drive_id(file_link)
-    if file_id:
-        try: requests.post(APPS_SCRIPT_URL, json={"action": "delete", "file_id": file_id})
-        except: pass
+    if file_id: requests.post(APPS_SCRIPT_URL, json={"action": "delete", "file_id": file_id})
     sh = get_sheet(); r = find_row_index(sh, job_id)
     if r:
         current_log = sh.cell(r, 11).value
-        # Dùng regex để xóa chính xác hơn
         new_log = re.sub(r"(\s*\|\s*)?File: .*? - " + re.escape(file_link), "", str(current_log))
         sh.update_cell(r, 11, new_log)
         if sh.cell(r, 10).value == file_link: sh.update_cell(r, 10, "")
@@ -193,7 +187,7 @@ def send_telegram_msg(msg):
     if not TELEGRAM_TOKEN: return
     def run(): 
         try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"})
-        except Exception as e: print(f"Tele Error: {e}")
+        except: pass
     threading.Thread(target=run).start()
 
 def login_user(u, p):
@@ -219,8 +213,7 @@ def delete_user_permanently(u):
 @st.cache_data(ttl=60)
 def get_all_users_cached():
     sh = get_users_sheet()
-    if sh is None: return pd.DataFrame()
-    return pd.DataFrame(sh.get_all_records())
+    return pd.DataFrame(sh.get_all_records()) if sh else pd.DataFrame()
 
 def get_all_users(): return get_all_users_cached()
 def update_user_role(u, r): sh = get_users_sheet(); c = sh.find(u); sh.update_cell(c.row, 4, r); get_all_users_cached.clear()
@@ -276,7 +269,7 @@ if 'scheduler_started' not in st.session_state:
     threading.Thread(target=run_schedule_check, daemon=True).start()
     st.session_state['scheduler_started'] = True
 
-# --- 4. LOGIC NGHIỆP VỤ ---
+# --- LOGIC ADD/UPDATE ---
 def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount):
     sh = get_sheet(); now = datetime.now(); now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     jid, seq_str = get_daily_sequence_id()
@@ -376,8 +369,7 @@ def pause_job(jid, rs, u):
     if r:
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
-        sh.update_cell(r, 7, "Tạm dừng")
-        olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
+        sh.update_cell(r, 7, "Tạm dừng"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
         log_to_audit(u, "PAUSE_JOB", f"ID: {jid}")
         send_telegram_msg(f"⛔ <b>TẠM DỪNG</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
@@ -386,8 +378,7 @@ def resume_job(jid, u):
     if r:
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
-        sh.update_cell(r, 7, "Đang xử lý")
-        olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
+        sh.update_cell(r, 7, "Đang xử lý"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
         log_to_audit(u, "RESUME_JOB", f"ID: {jid}")
         send_telegram_msg(f"▶️ <b>KHÔI PHỤC</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}")
 
@@ -396,8 +387,7 @@ def terminate_job(jid, rs, u):
     if r:
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
-        sh.update_cell(r, 7, "Kết thúc sớm")
-        olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
+        sh.update_cell(r, 7, "Kết thúc sớm"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
         log_to_audit(u, "TERMINATE_JOB", f"ID: {jid}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
@@ -423,7 +413,7 @@ def scan_bottlenecks(df):
             bottlenecks.append(f"⚠️ **{name}**\n- Kẹt ở: {j['current_stage']}\n- Thời gian: {hours}h (Giới hạn: {limit}h)")
     return bottlenecks
 
-# --- UI COMPONENTS & RENDER ---
+# --- RENDER JOB CARD ---
 def render_job_card(j, user, role, user_list):
     proc_name = extract_proc_from_log(j['logs'])
     code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], j['customer_phone'], j['address'], proc_name)
@@ -451,13 +441,15 @@ def render_job_card(j, user, role, user_list):
         t1, t2, t3, t4 = st.tabs(["ℹ️ Thông tin & File", "⚙️ Xử lý Hồ sơ", "💰 Tài Chính", "📜 Nhật ký"])
         with t1:
             st.subheader(f"👤 {j['customer_name']}")
+            # [FIX DUPLICATE ID]: Thêm key unique cho các input trong popover
             if role == "Quản lý":
                 with st.popover("✏️ Sửa Thông Tin"):
-                    new_n = st.text_input("Tên", j['customer_name'])
-                    new_p = st.text_input("SĐT", j['customer_phone'])
-                    new_a = st.text_input("Địa chỉ", j['address'])
-                    if st.button("Lưu Thay Đổi", key=f"edit_{j['id']}"):
+                    new_n = st.text_input("Tên", j['customer_name'], key=f"edit_name_{j['id']}")
+                    new_p = st.text_input("SĐT", j['customer_phone'], key=f"edit_phone_{j['id']}")
+                    new_a = st.text_input("Địa chỉ", j['address'], key=f"edit_addr_{j['id']}")
+                    if st.button("Lưu Thay Đổi", key=f"save_edit_{j['id']}"):
                         update_customer_info(j['id'], new_n, new_p, new_a, user); time.sleep(1); st.rerun()
+
             if safe_int(j.get('is_survey_only')) == 1: st.warning("🛠️ CHỈ ĐO ĐẠC")
             if proc_name: st.info(f"Thủ tục: {proc_name}")
             st.markdown(render_contact_buttons(j['customer_phone']), unsafe_allow_html=True)
@@ -538,8 +530,8 @@ def render_job_card(j, user, role, user_list):
             for log_line in raw_logs:
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
-# --- 8. UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V23.3", page_icon="☁️", layout="wide")
+# --- UI MAIN ---
+st.set_page_config(page_title="Đo Đạc Cloud V23.4", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
