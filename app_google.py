@@ -795,7 +795,6 @@ else:
                 my_df = active_df[~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
             
             now = datetime.now()
-            # [FIX] Ép kiểu datetime chặt chẽ để lọc đúng
             my_df['dl_dt'] = pd.to_datetime(my_df['deadline'], errors='coerce')
             my_df['dl_dt'] = my_df['dl_dt'].fillna(now + timedelta(days=365))
             
@@ -820,17 +819,60 @@ else:
                 if k2.button(f"🟡 Sắp đến hạn ({count_soon})", use_container_width=True): st.session_state['job_filter'] = 'urgent'
                 if k3.button(f"⛔ Tạm dừng ({count_paused})", use_container_width=True): st.session_state['job_filter'] = 'paused'
                 if k4.button(f"🟢 Tổng ({count_total})", use_container_width=True): st.session_state['job_filter'] = 'all'
-                
+
+                # --- [NEW] BỘ LỌC TÌM KIẾM ---
+                st.write("")
+                with st.expander("🔎 Bộ lọc tìm kiếm & Thời gian", expanded=True):
+                    f_c1, f_c2, f_c3, f_c4 = st.columns([2, 1.5, 1, 1.5])
+                    with f_c1:
+                        search_kw = st.text_input("🔍 Từ khóa (Tên, SĐT, Mã, Đ/c)", placeholder="Nhập để tìm...", key="s_kw")
+                    with f_c2:
+                        filter_users = ["Tất cả"] + user_list
+                        sel_user = st.selectbox("👤 Người làm", filter_users, key="s_user")
+                    with f_c3:
+                        time_option = st.selectbox("📅 Thời gian", ["Tất cả", "Tháng này", "Khoảng ngày"], key="s_time_opt")
+                    with f_c4:
+                        d_range = None
+                        if time_option == "Khoảng ngày":
+                            d_range = st.date_input("Chọn ngày", [], key="s_date_rng")
+                        elif time_option == "Tháng này":
+                            st.info(f"Tháng {datetime.now().month}/{datetime.now().year}")
+
+                # --- LOGIC LỌC ---
+                # 1. Lọc theo Nút bấm (Trạng thái)
                 if st.session_state['job_filter'] == 'overdue': display_df = my_df[(my_df['dl_dt'] < now) & (my_df['status'] != 'Tạm dừng')]
                 elif st.session_state['job_filter'] == 'urgent': display_df = my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(hours=24)) & (my_df['status'] != 'Tạm dừng')]
                 elif st.session_state['job_filter'] == 'paused': display_df = my_df[my_df['status'] == 'Tạm dừng']
                 else: display_df = my_df
 
+                # 2. Lọc theo Từ khóa
+                if search_kw:
+                    search_kw = search_kw.lower()
+                    display_df['search_str'] = display_df.apply(lambda x: f"{x['id']} {x['customer_name']} {x['customer_phone']} {x['address']} {extract_proc_from_log(x['logs'])}".lower(), axis=1)
+                    display_df = display_df[display_df['search_str'].str.contains(search_kw, na=False)]
+
+                # 3. Lọc theo Người làm
+                if sel_user != "Tất cả":
+                    u_filter = sel_user.split(' - ')[0]
+                    display_df = display_df[display_df['assigned_to'].astype(str).str.contains(u_filter, na=False)]
+
+                # 4. Lọc theo Thời gian (Ngày tạo)
+                if 'start_dt' in display_df.columns:
+                    if time_option == "Tháng này":
+                        start_month = date.today().replace(day=1)
+                        display_df = display_df[display_df['start_dt'] >= start_month]
+                    elif time_option == "Khoảng ngày" and d_range and len(d_range) == 2:
+                        display_df = display_df[(display_df['start_dt'] >= d_range[0]) & (display_df['start_dt'] <= d_range[1])]
+
                 st.divider()
                 filter_map = {'overdue': '🔴 QUÁ HẠN', 'urgent': '🟡 SẮP ĐẾN HẠN (<24h)', 'paused': '⛔ TẠM DỪNG', 'all': '🟢 TẤT CẢ'}
                 cur_filter = st.session_state.get('job_filter', 'all')
                 st.caption(f"Đang hiển thị: **{filter_map.get(cur_filter, 'Tất cả')}** ({len(display_df)} hồ sơ)")
-                for i, j in display_df.iterrows(): render_job_card(j, user, role, user_list)
+                
+                if display_df.empty:
+                    st.warning("Không tìm thấy hồ sơ nào phù hợp bộ lọc.")
+                else:
+                    for i, j in display_df.iterrows(): render_job_card(j, user, role, user_list)
 
     elif sel == "📝 Tạo Hồ Sơ":
         st.title("Tạo Hồ Sơ")
