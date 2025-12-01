@@ -713,7 +713,7 @@ def render_job_card(j, user, role, user_list, is_trash=False):
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
 # --- UI MAIN ---
-st.set_page_config(page_title="Đo Đạc Cloud V2.1", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V2.2", page_icon="☁️", layout="wide")
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
 if 'job_filter' not in st.session_state: st.session_state['job_filter'] = 'all'
@@ -796,15 +796,20 @@ else:
 
                 st.write("")
                 with st.expander("🔎 Bộ lọc tìm kiếm & Thời gian", expanded=True):
-                    f_c1, f_c2, f_c3, f_c4 = st.columns([2, 1.5, 1, 1.5])
+                    # --- [UPDATE] LAYOUT 5 CỘT ---
+                    f_c1, f_c2, f_c3, f_c4, f_c5 = st.columns([2, 1.5, 1.5, 1, 1.5])
                     with f_c1:
                         search_kw = st.text_input("🔍 Từ khóa (Tên, SĐT, Mã, Đ/c)", placeholder="Nhập để tìm...", key="s_kw")
                     with f_c2:
+                        # --- [NEW] BỘ LỌC QUY TRÌNH ---
+                        filter_stages = ["Tất cả"] + STAGES_ORDER
+                        sel_stage = st.selectbox("📌 Quy trình", filter_stages, key="s_stage")
+                    with f_c3:
                         filter_users = ["Tất cả"] + user_list
                         sel_user = st.selectbox("👤 Người làm", filter_users, key="s_user")
-                    with f_c3:
-                        time_option = st.selectbox("📅 Thời gian", ["Tất cả", "Tháng này", "Khoảng ngày"], key="s_time_opt")
                     with f_c4:
+                        time_option = st.selectbox("📅 Thời gian", ["Tất cả", "Tháng này", "Khoảng ngày"], key="s_time_opt")
+                    with f_c5:
                         d_range = None
                         if time_option == "Khoảng ngày":
                             d_range = st.date_input("Chọn ngày", [], key="s_date_rng")
@@ -820,6 +825,10 @@ else:
                     search_kw = search_kw.lower()
                     display_df['search_str'] = display_df.apply(lambda x: f"{x['id']} {x['customer_name']} {x['customer_phone']} {x['address']} {extract_proc_from_log(x['logs'])}".lower(), axis=1)
                     display_df = display_df[display_df['search_str'].str.contains(search_kw, na=False)]
+
+                # --- [NEW] LOGIC LỌC QUY TRÌNH ---
+                if sel_stage != "Tất cả":
+                    display_df = display_df[display_df['current_stage'] == sel_stage]
 
                 if sel_user != "Tất cả":
                     u_filter = sel_user.split(' - ')[0]
