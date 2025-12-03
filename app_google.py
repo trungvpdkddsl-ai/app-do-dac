@@ -789,25 +789,39 @@ else:
     sel = st.session_state['menu_selection']; user_list = get_active_users_list()
     
     if sel == "🏠 Việc Của Tôi":
-        st.title("📋 Tiến trình hồ sơ")
+        c_title, c_check = st.columns([0.7, 0.3])
+        c_title.title("📋 Tiến trình hồ sơ")
+        show_history = c_check.checkbox("📂 Xem lịch sử (Đã xong)", value=False, help="Hiển thị cả hồ sơ Hoàn thành và Kết thúc sớm")
+        
         if df.empty: st.info("Trống!")
         else:
             active_df = df[df['status'] != 'Đã xóa']
-            if role != "Quản lý": 
-                my_df = active_df[(active_df['assigned_to'].astype(str) == user) & (~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))]
-            else: 
-                my_df = active_df[~active_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
             
+            # 1. Lọc theo User
+            if role != "Quản lý": 
+                user_filtered_df = active_df[active_df['assigned_to'].astype(str) == user]
+            else: 
+                user_filtered_df = active_df
+            
+            # 2. Lọc theo trạng thái dựa trên checkbox
+            if show_history:
+                my_df = user_filtered_df 
+            else:
+                my_df = user_filtered_df[~user_filtered_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
+
             now = datetime.now()
             my_df['dl_dt'] = pd.to_datetime(my_df['deadline'], errors='coerce')
             my_df['dl_dt'] = my_df['dl_dt'].fillna(now + timedelta(days=365))
             
-            count_overdue = len(my_df[(my_df['dl_dt'] < now) & (my_df['status'] != 'Tạm dừng')])
-            count_soon = len(my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(hours=24)) & (my_df['status'] != 'Tạm dừng')])
+            # Tính toán chỉ số (Metrics) - Lưu ý: metric quá hạn không tính hồ sơ đã xong
+            count_overdue = len(my_df[(my_df['dl_dt'] < now) & (my_df['status'] != 'Tạm dừng') & (~my_df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))])
+            count_soon = len(my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(hours=24)) & (my_df['status'] != 'Tạm dừng') & (~my_df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))])
             count_paused = len(my_df[my_df['status'] == 'Tạm dừng'])
             count_total = len(my_df)
 
-            if my_df.empty: st.info("Hết việc!")
+            if my_df.empty: 
+                if show_history: st.info("Không có hồ sơ nào.")
+                else: st.info("Hết việc đang xử lý! (Tích vào 'Xem lịch sử' để xem hồ sơ cũ)")
             else:
                 k1, k2, k3, k4 = st.columns(4)
                 if k1.button(f"🔴 Quá Hạn ({count_overdue})", use_container_width=True): st.session_state['job_filter'] = 'overdue'
@@ -821,7 +835,7 @@ else:
                     with f_c1:
                         search_kw = st.text_input("🔍 Từ khóa (Tên, SĐT, Mã, Đ/c)", placeholder="Nhập để tìm...", key="s_kw")
                     with f_c2:
-                        filter_stages = ["Tất cả"] + STAGES_ORDER
+                        filter_stages = ["Tất cả"] + STAGES_ORDER + ["8. Hoàn thành"]
                         sel_stage = st.selectbox("📌 Quy trình", filter_stages, key="s_stage")
                     with f_c3:
                         filter_users = ["Tất cả"] + user_list
@@ -867,6 +881,7 @@ else:
                 if display_df.empty:
                     st.warning("Không tìm thấy hồ sơ nào phù hợp bộ lọc.")
                 else:
+                    display_df = display_df.sort_values(by=['status', 'id'], ascending=[True, False])
                     for i, j in display_df.iterrows(): render_job_card(j, user, role, user_list)
 
     elif sel == "📝 Tạo Hồ Sơ":
