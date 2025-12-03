@@ -542,6 +542,7 @@ def render_square_menu(role):
              st.button("🗑️ Thùng Rác", on_click=change_menu, args=("🗑️ Thùng Rác",))
     with c2:
         st.button("📅 Lịch Biểu", on_click=change_menu, args=("📅 Lịch Biểu",))
+        st.button("🗄️ Lưu Trữ", on_click=change_menu, args=("🗄️ Lưu Trữ",)) # Nút mới
         st.button("📊 Báo Cáo", on_click=change_menu, args=("📊 Báo Cáo",))
         if role == "Quản lý":
             st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
@@ -789,9 +790,7 @@ else:
     sel = st.session_state['menu_selection']; user_list = get_active_users_list()
     
     if sel == "🏠 Việc Của Tôi":
-        c_title, c_check = st.columns([0.7, 0.3])
-        c_title.title("📋 Tiến trình hồ sơ")
-        show_history = c_check.checkbox("📂 Xem lịch sử (Đã xong)", value=False, help="Hiển thị cả hồ sơ Hoàn thành và Kết thúc sớm")
+        st.title("📋 Tiến trình hồ sơ")
         
         if df.empty: st.info("Trống!")
         else:
@@ -803,25 +802,21 @@ else:
             else: 
                 user_filtered_df = active_df
             
-            # 2. Lọc theo trạng thái dựa trên checkbox
-            if show_history:
-                my_df = user_filtered_df 
-            else:
-                my_df = user_filtered_df[~user_filtered_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
+            # 2. LUÔN LUÔN ẩn hồ sơ đã xong (vì đã có menu riêng)
+            my_df = user_filtered_df[~user_filtered_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
 
             now = datetime.now()
             my_df['dl_dt'] = pd.to_datetime(my_df['deadline'], errors='coerce')
             my_df['dl_dt'] = my_df['dl_dt'].fillna(now + timedelta(days=365))
             
-            # Tính toán chỉ số (Metrics) - Lưu ý: metric quá hạn không tính hồ sơ đã xong
-            count_overdue = len(my_df[(my_df['dl_dt'] < now) & (my_df['status'] != 'Tạm dừng') & (~my_df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))])
-            count_soon = len(my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(hours=24)) & (my_df['status'] != 'Tạm dừng') & (~my_df['status'].isin(['Hoàn thành', 'Kết thúc sớm']))])
+            # Tính toán chỉ số (Metrics)
+            count_overdue = len(my_df[(my_df['dl_dt'] < now) & (my_df['status'] != 'Tạm dừng')])
+            count_soon = len(my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(hours=24)) & (my_df['status'] != 'Tạm dừng')])
             count_paused = len(my_df[my_df['status'] == 'Tạm dừng'])
             count_total = len(my_df)
 
             if my_df.empty: 
-                if show_history: st.info("Không có hồ sơ nào.")
-                else: st.info("Hết việc đang xử lý! (Tích vào 'Xem lịch sử' để xem hồ sơ cũ)")
+                st.info("Không có hồ sơ nào đang xử lý. (Kiểm tra mục 'Lưu Trữ' để xem hồ sơ đã xong)")
             else:
                 k1, k2, k3, k4 = st.columns(4)
                 if k1.button(f"🔴 Quá Hạn ({count_overdue})", use_container_width=True): st.session_state['job_filter'] = 'overdue'
@@ -835,7 +830,7 @@ else:
                     with f_c1:
                         search_kw = st.text_input("🔍 Từ khóa (Tên, SĐT, Mã, Đ/c)", placeholder="Nhập để tìm...", key="s_kw")
                     with f_c2:
-                        filter_stages = ["Tất cả"] + STAGES_ORDER + ["8. Hoàn thành"]
+                        filter_stages = ["Tất cả"] + STAGES_ORDER
                         sel_stage = st.selectbox("📌 Quy trình", filter_stages, key="s_stage")
                     with f_c3:
                         filter_users = ["Tất cả"] + user_list
@@ -883,6 +878,71 @@ else:
                 else:
                     display_df = display_df.sort_values(by=['status', 'id'], ascending=[True, False])
                     for i, j in display_df.iterrows(): render_job_card(j, user, role, user_list)
+
+    elif sel == "🗄️ Lưu Trữ":
+        st.title("🗄️ Kho Lưu Trữ Hồ Sơ")
+        if df.empty:
+            st.info("Chưa có dữ liệu.")
+        else:
+            # Lọc hồ sơ đã xong
+            archive_df = df[df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])].copy()
+            
+            if archive_df.empty:
+                st.info("Chưa có hồ sơ nào đã hoàn thành hoặc kết thúc.")
+            else:
+                # Xử lý ngày tháng
+                archive_df['start_dt'] = pd.to_datetime(archive_df['start_time'], errors='coerce')
+                archive_df['year'] = archive_df['start_dt'].dt.year
+                archive_df['month'] = archive_df['start_dt'].dt.month
+                
+                unique_years = sorted(archive_df['year'].dropna().unique().astype(int), reverse=True)
+                if not unique_years: unique_years = [datetime.now().year]
+
+                with st.container(border=True):
+                    c_filter_y, c_filter_m = st.columns(2)
+                    sel_year = c_filter_y.selectbox("📅 Chọn Năm", unique_years)
+                    sel_month = c_filter_m.selectbox("📅 Chọn Tháng", range(1, 13), index=datetime.now().month-1)
+                
+                # Lọc theo năm và tháng
+                filtered_archive = archive_df[(archive_df['year'] == sel_year) & (archive_df['month'] == sel_month)]
+                
+                # --- METRICS ---
+                count_total = len(filtered_archive)
+                total_rev = filtered_archive['survey_fee'].apply(safe_int).sum()
+                count_done = len(filtered_archive[filtered_archive['status']=='Hoàn thành'])
+                count_term = len(filtered_archive[filtered_archive['status']=='Kết thúc sớm'])
+                
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Tổng Hồ Sơ", count_total)
+                m2.metric("Doanh Thu", f"{total_rev:,.0f} đ")
+                m3.metric("Hoàn thành / Kết thúc", f"{count_done} / {count_term}")
+                
+                st.divider()
+                
+                if filtered_archive.empty:
+                    st.warning(f"Không có hồ sơ nào trong tháng {sel_month}/{sel_year}.")
+                else:
+                    # --- BẢNG DỮ LIỆU ---
+                    st.subheader("📋 Bảng Số Liệu Chi Tiết")
+                    
+                    # Chuẩn bị dataframe hiển thị
+                    display_table = filtered_archive[['id', 'start_time', 'customer_name', 'customer_phone', 'address', 'status', 'survey_fee']].copy()
+                    display_table['survey_fee'] = display_table['survey_fee'].apply(safe_int)
+                    display_table.columns = ['Mã', 'Ngày tạo', 'Khách hàng', 'SĐT', 'Địa chỉ', 'Trạng thái', 'Phí đo đạc']
+                    
+                    st.dataframe(
+                        display_table,
+                        use_container_width=True,
+                        column_config={
+                            "Phí đo đạc": st.column_config.NumberColumn(format="%d đ"),
+                            "Ngày tạo": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                        },
+                        hide_index=True
+                    )
+                    
+                    st.subheader("📂 Danh sách Hồ sơ")
+                    for i, j in filtered_archive.iterrows():
+                        render_job_card(j, user, role, user_list)
 
     elif sel == "📝 Tạo Hồ Sơ":
         st.title("Tạo Hồ Sơ")
