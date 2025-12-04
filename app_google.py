@@ -349,8 +349,9 @@ if 'scheduler_started' not in st.session_state:
     threading.Thread(target=run_schedule_check, daemon=True).start()
     st.session_state['scheduler_started'] = True
 
-# --- LOGIC ADD/UPDATE ---
-def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount, scheduled_date=None):
+# --- LOGIC ADD/UPDATE (Đã sửa logic tạo hồ sơ) ---
+def add_job(n, p, a, proc, f, u, asn):
+    # Loại bỏ các tham số tài chính và lịch hẹn vì đã bỏ ở UI
     sh = get_sheet(); now = datetime.now(); now_str = now.strftime("%Y-%m-%d %H:%M:%S")
     jid, seq_str = get_daily_sequence_id()
     phone_db = f"'{p}" 
@@ -361,31 +362,22 @@ def add_job(n, p, a, proc, f, u, asn, is_survey, deposit_ok, fee_amount, schedul
             l, n_f = upload_file_via_script(uploaded_file, full_name_str)
             if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
 
-    schedule_note = ""
-    if scheduled_date:
-        start_count_time = datetime.combine(scheduled_date, datetime.min.time()).replace(hour=8)
-        next_step_key = "2. Đo đạc" if proc not in ["Cung cấp thông tin", "Đính chính"] else "4. Làm hồ sơ"
-        dl_dt = calculate_deadline(start_count_time, STAGE_SLA_HOURS.get(next_step_key, 24))
-        dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
-        schedule_note = f" (Hẹn đo: {scheduled_date.strftime('%d/%m/%Y')})"
-    else:
-        dl_dt = now + timedelta(days=365) 
-        dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
+    # Mặc định hạn là 1 năm (chờ xử lý)
+    dl_dt = now + timedelta(days=365) 
+    dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
-    log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{schedule_note}{log_file_str}"
+    log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{log_file_str}"
     asn_clean = asn.split(" - ")[0] if asn else ""
-    sv_flag = 1 if is_survey else 0; dep_flag = 1 if deposit_ok else 0
     
-    sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, sv_flag, dep_flag, fee_amount, 0])
+    # Mặc định ban đầu chưa thu tiền (0), chưa cọc (0)
+    sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, 0, 0, 0, 0])
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
     
     type_msg = f"({proc.upper()})"
-    money_msg = "✅ Đã thu tạm ứng" if deposit_ok else "❌ Chưa thu tạm ứng"
     file_msg = f"\n📎 Có {len(f)} file đính kèm" if f else ""
     assign_msg = f"👉 <b>{asn_clean}</b>"
-    schedule_msg = f"\n📅 <b>Lịch hẹn: {scheduled_date.strftime('%d/%m/%Y')}</b>" if scheduled_date else ""
-    send_telegram_msg(f"🚀 <b>MỚI #{seq_str} {type_msg}</b>\n📂 <b>{full_name_str}</b>\n{assign_msg}{schedule_msg}\n💰 {money_msg}{file_msg}")
+    send_telegram_msg(f"🚀 <b>MỚI #{seq_str} {type_msg}</b>\n📂 <b>{full_name_str}</b>\n{assign_msg}\n{file_msg}")
 
 def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid, result_date=None):
     sh = get_sheet(); r = find_row_index(sh, jid)
@@ -665,15 +657,28 @@ def render_job_card_content(j, user, role, user_list):
             rst = st.text_input("Lý do kết thúc:", key=f"rst{j['id']}")
             if st.button("Xác nhận kết thúc", key=f"okt{j['id']}"): terminate_job(j['id'], rst, user); st.rerun()
 
+    # --- TAB 3: TÀI CHÍNH (Đã cập nhật logic mới) ---
     with t3:
         with st.form(f"mon_{j['id']}"):
-            c1, c2, c3 = st.columns([1, 2, 1])
-            c1.checkbox("Đã cọc", value=safe_int(j.get('deposit'))==1)
-            c2.number_input("Phí đo đạc:", value=safe_int(j.get('survey_fee')), step=100000, label_visibility="collapsed")
-            c3.checkbox("Đã thu đủ", value=safe_int(j.get('is_paid'))==1)
-            if st.form_submit_button("💾 Lưu TC", use_container_width=True): 
-                update_finance_only(j['id'], safe_int(j.get('deposit'))==1, safe_int(j.get('survey_fee')), safe_int(j.get('is_paid'))==1, user)
-                st.success("Đã lưu"); st.rerun()
+            # Logic riêng cho Tách thửa
+            if "Tách thửa" in proc_name:
+                st.write("💰 **Chi phí Tách thửa**")
+                c1, c2 = st.columns([2, 1])
+                fee_val = c1.number_input("Số tiền:", value=safe_int(j.get('survey_fee')), step=100000)
+                paid_status = c2.checkbox("Đã thanh toán", value=safe_int(j.get('is_paid'))==1)
+                
+                if st.form_submit_button("💾 Lưu TC", use_container_width=True): 
+                    update_finance_only(j['id'], 0, fee_val, paid_status, user)
+                    st.success("Đã lưu"); st.rerun()
+            else:
+                # Logic mặc định (Đo đạc = 1.5M)
+                st.write("💰 **Chi phí Đo đạc**")
+                is_collected = st.checkbox("✅ Đã thu tiền đo đạc (1.500.000 VNĐ)", value=safe_int(j.get('is_paid'))==1)
+                
+                if st.form_submit_button("💾 Lưu TC", use_container_width=True): 
+                    final_fee = 1500000 if is_collected else 0
+                    update_finance_only(j['id'], 0, final_fee, is_collected, user)
+                    st.success("Đã lưu"); st.rerun()
     
     with t4:
         st.text_area("", j['logs'], height=150, disabled=True, label_visibility="collapsed")
@@ -934,21 +939,20 @@ else:
         st.title("Tạo Hồ Sơ")
         c1, c2 = st.columns(2); n = c1.text_input("Tên Khách Hàng"); p = c2.text_input("SĐT"); a = st.text_input("Địa chỉ")
         c3, c4 = st.columns([1, 1]); 
-        with c3: is_sv = st.checkbox("🛠️ CHỈ ĐO ĐẠC")
+        # Bỏ checkbox Chỉ đo đạc theo yêu cầu tối giản
         with c4: proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
         st.markdown("---")
-        cols_sch = st.columns([0.4, 0.6])
-        with cols_sch[0]: is_scheduled = st.checkbox("📅 Hẹn ngày đo sau")
-        sch_date = None
-        with cols_sch[1]:
-            if is_scheduled: sch_date = st.date_input("Chọn ngày hẹn:", datetime.now() + timedelta(days=1), label_visibility="collapsed")
-        if is_scheduled and sch_date: st.info(f"Hồ sơ sẽ chờ. Quy trình 24h tính từ 08:00 ngày {sch_date.strftime('%d/%m/%Y')}.")
+        # Bỏ hẹn ngày đo sau và các ô nhập tiền
         f = st.file_uploader("File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"new_up_{st.session_state['uploader_key']}")
-        st.markdown("---"); st.write("💰 **Phí:**"); c_m1, c_m2 = st.columns(2); dep_ok = c_m1.checkbox("Đã tạm ứng?"); fee_val = c_m2.number_input("Phí:", value=0, step=100000)
-        asn = st.selectbox("Giao:", user_list)
+        st.markdown("---")
+        asn = st.selectbox("Giao việc cho:", user_list)
         if st.button("Tạo Hồ Sơ", type="primary"):
-            if n and asn: add_job(n, p, a, proc, f, user, asn, is_sv, dep_ok, fee_val, sch_date); st.session_state['uploader_key'] += 1; st.success("OK! Hồ sơ mới đã tạo."); st.rerun()
-            else: st.error("Thiếu thông tin!")
+            if n and asn: 
+                add_job(n, p, a, proc, f, user, asn)
+                st.session_state['uploader_key'] += 1
+                st.success("OK! Hồ sơ mới đã tạo.")
+                st.rerun()
+            else: st.error("Thiếu tên hoặc người giao việc!")
 
     elif sel == "📅 Lịch Biểu":
         st.title("📅 Lịch Làm Việc")
