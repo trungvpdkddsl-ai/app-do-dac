@@ -19,7 +19,7 @@ TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
 TELEGRAM_CHAT_ID = "-5055192262"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
-# KEY KẾT NỐI (Lưu ý: Bạn cần đảm bảo st.secrets đã cấu hình đúng)
+# KEY KẾT NỐI
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyEMEGyS_sVCA4eyVRFXxnOuGqMnJOKOIqZqKxi4HpYBcpr7U72WUXCoKLm20BQomVC/exec"
 DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy"
 
@@ -137,7 +137,7 @@ def get_drive_id(link):
     try: match = re.search(r'/d/([a-zA-Z0-9_-]+)', link); return match.group(1) if match else None
     except: return None
 
-# --- NEW: HÀM HIỂN THỊ TRẠNG THÁI THÔNG MINH ---
+# --- TRẠNG THÁI & HIỂN THỊ ---
 def get_status_display(row):
     """Trả về icon, text hiển thị và màu sắc cảnh báo"""
     if row['status'] == 'Tạm dừng': return "⛔", "Tạm dừng", "gray"
@@ -158,6 +158,19 @@ def get_status_display(row):
     except: pass
     
     return "🟢", "Đang xử lý", "blue"
+
+def get_detailed_overdue_string(deadline_dt):
+    """Tính toán chuỗi quá hạn chi tiết: 82 ngày 22 giờ..."""
+    if not deadline_dt: return ""
+    now = datetime.now()
+    if now > deadline_dt:
+        diff = now - deadline_dt
+        days = diff.days
+        hours = diff.seconds // 3600
+        minutes = (diff.seconds % 3600) // 60
+        seconds = diff.seconds % 60
+        return f"Đã quá hạn {days} ngày {hours} giờ {minutes} phút {seconds} giây"
+    return ""
 
 def generate_zalo_message(job_data, deadline_dt):
     name = job_data['customer_name']
@@ -537,14 +550,13 @@ def render_square_menu(role):
             st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
             st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
 
-# --- NEW: RENDER JOB CARD (OPTIMIZED) ---
+# --- RENDER JOB CARD (OPTIMIZED) ---
 def render_job_card(j, user, role, user_list, is_trash=False):
     proc_name = extract_proc_from_log(j['logs'])
     code_display = generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", proc_name).split(' ')[0] 
     
     icon, status_text, color_code = get_status_display(j)
     
-    # Header Tối ưu hóa: Ngắn gọn, súc tích
     header_title = f"{icon} {code_display} | {j['customer_name']} | {j['current_stage']}"
     if is_trash: header_title = f"🗑️ {j['customer_name']} (Đã xóa)"
 
@@ -556,7 +568,6 @@ def render_job_card(j, user, role, user_list, is_trash=False):
             if c2.button("🔥 Xóa vĩnh viễn", key=f"del_forever_{j['id']}"): delete_forever(j['id'], user); time.sleep(1); st.rerun()
             return
 
-        # --- INFO DASHBOARD ---
         info_c1, info_c2, info_c3 = st.columns([1.5, 1.2, 1.3])
         
         with info_c1:
@@ -585,7 +596,6 @@ def render_job_card(j, user, role, user_list, is_trash=False):
 
         st.markdown("---")
         
-        # --- TABS LOGIC (GIỮ NGUYÊN TÍNH NĂNG CŨ) ---
         t1, t2, t3, t4 = st.tabs(["ℹ️ Chi tiết & File", "⚙️ Xử lý Hồ sơ", "💰 Tài Chính", "📜 Nhật ký"])
         
         with t1:
@@ -715,50 +725,118 @@ def render_job_card(j, user, role, user_list, is_trash=False):
             for log_line in raw_logs:
                 if log_line.strip(): st.text(re.sub(r'\| File: .*', '', log_line))
 
-# --- NEW: RENDER SMART TABLE ---
-def render_smart_table_mode(df, user, role, user_list):
-    """Hiển thị danh sách hồ sơ dưới dạng bảng tương tác"""
-    st.caption("💡 Mẹo: Chọn một dòng trong bảng để mở chi tiết hồ sơ bên dưới.")
-    
-    table_df = df.copy()
-    
-    # Chuẩn bị dữ liệu hiển thị
-    table_df['Icon'], _, _ = zip(*table_df.apply(get_status_display, axis=1))
-    
-    def get_prog(s):
-        try: return (STAGES_ORDER.index(s) + 1) / 8
-        except: return 0
-    table_df['Progress'] = table_df['current_stage'].apply(get_prog)
-    table_df['Deadline_Short'] = pd.to_datetime(table_df['deadline'], errors='coerce')
+# --- RENDER NEW LIST VIEW (THEO YÊU CẦU MỚI) ---
+def render_complex_list_view(df, user, role, user_list):
+    st.markdown("""
+    <style>
+        .header-row {
+            background-color: #f0f2f6;
+            padding: 15px 10px;
+            font-weight: bold;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            color: #31333F;
+            font-size: 14px;
+        }
+        .row-container {
+            border-bottom: 1px solid #e0e0e0;
+            padding: 15px 0px;
+            align-items: center;
+        }
+        .text-blue { color: #0068C9; font-weight: bold; cursor: pointer; }
+        .text-red { color: #FF4B4B; }
+        .text-small { font-size: 13px; color: #555; }
+        .proc-code { color: #FF4B4B; font-weight: bold; }
+        .status-tag { color: #FF4B4B; font-weight: 500; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    view_df = table_df[['id', 'Icon', 'customer_name', 'customer_phone', 'current_stage', 'Progress', 'Deadline_Short', 'assigned_to']]
+    # Header Row
+    cols_cfg = [0.3, 0.3, 1.2, 2, 1.5, 2.5, 1.5, 1, 0.5]
+    h1, h2, h3, h4, h5, h6, h7, h8, h9 = st.columns(cols_cfg)
+    with h1: st.markdown("⬜")
+    with h2: st.markdown("**STT**")
+    with h3: st.markdown("**Mã số hồ sơ**")
+    with h4: st.markdown("**Thủ tục**")
+    with h5: st.markdown("**Chủ hồ sơ**")
+    with h6: st.markdown("**Thời gian quy định**")
+    with h7: st.markdown("**Cơ quan thực hiện**")
+    with h8: st.markdown("**Trạng thái**")
+    with h9: st.markdown("**Thao tác**")
+    
+    st.markdown("<hr style='margin: 0px 0px 10px 0px;'>", unsafe_allow_html=True)
 
-    event = st.dataframe(
-        view_df,
-        column_config={
-            "id": st.column_config.TextColumn("Mã", width="small"),
-            "Icon": st.column_config.TextColumn("TT", width="small", help="🔴: Trễ | 🟡: Gấp | ⛔: Dừng"),
-            "customer_name": "Tên Khách",
-            "customer_phone": "SĐT",
-            "current_stage": "Tiến độ hiện tại",
-            "Progress": st.column_config.ProgressColumn("Process", format="%.0f%%", min_value=0, max_value=1),
-            "Deadline_Short": st.column_config.DatetimeColumn("Hạn chót", format="DD/MM HH:mm"),
-            "assigned_to": "Người làm",
-        },
-        hide_index=True,
-        use_container_width=True,
-        on_select="rerun", 
-        selection_mode="single-row"
-    )
+    if df.empty:
+        st.info("Không có dữ liệu hiển thị.")
+        return
 
-    selected_rows = event.selection.rows
-    if selected_rows:
-        index = selected_rows[0]
-        selected_id = view_df.iloc[index]['id']
-        st.divider()
-        st.markdown(f"### 🔧 Đang xử lý hồ sơ: {selected_id}")
-        original_row = df[df['id'] == selected_id].iloc[0]
-        render_job_card(original_row, user, role, user_list)
+    for index, row in df.iterrows():
+        proc_full = extract_proc_from_log(row['logs'])
+        proc_code = "1.012783.H44" 
+        
+        try: dl_dt = pd.to_datetime(row['deadline'])
+        except: dl_dt = datetime.now() + timedelta(days=30)
+        
+        start_dt = pd.to_datetime(row['start_time'])
+        
+        is_late = datetime.now() > dl_dt
+        overdue_str = get_detailed_overdue_string(dl_dt) if is_late else ""
+        
+        with st.container():
+            c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(cols_cfg)
+            
+            with c1: st.checkbox("", key=f"chk_{row['id']}", label_visibility="collapsed")
+            with c2: st.write(f"{index + 1}")
+            full_id_display = f"H44.{row['id']}-250826" 
+            with c3: 
+                if st.button(full_id_display, key=f"btn_id_{row['id']}", help="Xem chi tiết"):
+                    render_job_card(row, user, role, user_list) 
+            
+            with c4:
+                st.markdown(f"<span class='proc-code'>{proc_code}</span>", unsafe_allow_html=True)
+                st.caption(f"- {proc_full if proc_full else 'Thủ tục đo đạc'}")
+            
+            with c5:
+                st.markdown(f"<span class='text-red'>{row['customer_name']}</span>", unsafe_allow_html=True)
+                st.caption(f"({row['address']})")
+            
+            with c6:
+                if is_late: st.markdown(f":red[**{overdue_str}**]")
+                else: st.markdown(f":green[Còn hạn]")
+                
+                date_fmt = "%d/%m/%Y %H:%M:%S"
+                st.markdown(f"""
+                <div style="font-size: 12px; line-height: 1.6;">
+                • Ngày nộp: {start_dt.strftime(date_fmt)}<br>
+                • Ngày tiếp nhận: {start_dt.strftime(date_fmt)}<br>
+                • Hạn xử lý: <span style='color:red'>{dl_dt.strftime(date_fmt)}</span><br>
+                • Ngày hẹn trả: {dl_dt.strftime(date_fmt)}
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with c7:
+                assignee = row['assigned_to'].split(' - ')[0] if row['assigned_to'] else "Chưa giao"
+                st.markdown(f"""
+                <div style="font-size: 12px;">
+                • Cơ quan: Phòng kỹ thuật<br>
+                • Cán bộ: <span style='color:red'>{assignee}</span>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with c8:
+                st.markdown(f"<span class='status-tag'>Đang xử lý</span>", unsafe_allow_html=True)
+            
+            with c9:
+                with st.popover("..."):
+                    if st.button("👁️ Xem", key=f"view_{row['id']}", use_container_width=True):
+                        render_job_card(row, user, role, user_list)
+                    if role == "Quản lý":
+                        if st.button("✏️ Sửa", key=f"edit_{row['id']}", use_container_width=True):
+                            st.toast("Tính năng đang phát triển")
+                        if st.button("🗑️ Xóa", key=f"del_{row['id']}", type="primary", use_container_width=True):
+                            move_to_trash(row['id'], user); time.sleep(1); st.rerun()
+
+            st.markdown("<hr style='margin: 0px; border-top: 1px solid #eee;'>", unsafe_allow_html=True)
 
 # --- UI MAIN ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
@@ -820,7 +898,6 @@ else:
         if df.empty: st.info("Trống!")
         else:
             active_df = df[df['status'] != 'Đã xóa']
-            # Lọc theo User
             if role != "Quản lý": 
                 user_filtered_df = active_df[active_df['assigned_to'].astype(str) == user]
             else: 
@@ -831,7 +908,6 @@ else:
             my_df['dl_dt'] = pd.to_datetime(my_df['deadline'], errors='coerce')
             my_df['dl_dt'] = my_df['dl_dt'].fillna(now + timedelta(days=365))
             
-            # Metrics
             count_overdue = len(my_df[(my_df['dl_dt'] < now) & (my_df['status'] != 'Tạm dừng')])
             count_soon = len(my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(hours=24)) & (my_df['status'] != 'Tạm dừng')])
             count_paused = len(my_df[my_df['status'] == 'Tạm dừng'])
@@ -905,7 +981,7 @@ else:
                     if view_mode == "📇 Thẻ":
                         for i, j in display_df.iterrows(): render_job_card(j, user, role, user_list)
                     else:
-                        render_smart_table_mode(display_df, user, role, user_list)
+                        render_complex_list_view(display_df, user, role, user_list)
 
     elif sel == "🗄️ Lưu Trữ":
         st.title("🗄️ Kho Lưu Trữ Hồ Sơ")
