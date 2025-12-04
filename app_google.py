@@ -591,8 +591,8 @@ def render_job_card_content(j, user, role, user_list):
         
         elif j['current_stage'] == "7. Nộp hồ sơ":
             st.info("🏢 **ĐANG CHỜ KẾT QUẢ TỪ CƠ QUAN CHỨC NĂNG**")
-            c_date, c_btn = st.columns([2,1])
-            new_date = c_date.date_input("Hẹn trả:", value=dl_dt.date(), key=f"d7_{j['id']}", label_visibility="collapsed")
+            c_d, c_b = st.columns([2,1])
+            new_date = c_d.date_input("Hẹn trả:", value=dl_dt.date(), key=f"d7_{j['id']}", label_visibility="collapsed")
             if c_b.button("Lưu hẹn", key=f"s7_{j['id']}"):
                  update_deadline_custom(j['id'], new_date, user); st.rerun()
             
