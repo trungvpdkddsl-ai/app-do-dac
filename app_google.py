@@ -64,7 +64,6 @@ def get_proc_abbr(proc_name):
     return mapping.get(proc_name, "K")
 
 def extract_proc_from_log(log_text):
-    # Lấy tên thủ tục trong ngoặc đơn, bỏ qua các mã số nếu có
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
     return match.group(1) if match else ""
 
@@ -85,8 +84,6 @@ def check_bottleneck(deadline_str, current_stage):
     return False, 0, 0
 
 def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
-    # Hàm này dùng để tạo full text search hoặc display nếu cần, 
-    # nhưng ở giao diện mới ta sẽ build từng phần riêng.
     try:
         jid_str = str(jid); seq = jid_str[-2:] 
         d_obj = datetime.strptime(str(start_time), "%Y-%m-%d %H:%M:%S")
@@ -169,20 +166,8 @@ def get_status_badge_html(row):
     return f"""<span style='background-color: {bg_color}; color: {color}; padding: 4px 8px; border-radius: 12px; font-weight: bold; font-size: 11px; border: 1px solid {color}; white-space: nowrap;'>{text}</span>"""
 
 def generate_zalo_message(job_data, deadline_dt):
-    name = job_data['customer_name']
-    stage = job_data['current_stage']
-    date_str = deadline_dt.strftime('%d/%m/%Y') if deadline_dt else "sớm nhất"
-    msgs = {
-        "1. Tạo mới": f"Chào anh/chị {name}, bên em đã nhận hồ sơ. Dự kiến ngày {date_str} bên em sẽ tiến hành đo đạc. Anh/chị để ý điện thoại giúp bên em ạ.",
-        "2. Đo đạc": f"Chào anh/chị {name}, bên em đã đo đạc xong. Hiện đang xử lý số liệu, dự kiến ngày {date_str} sẽ hoàn thiện trích đo ạ.",
-        "3. Hoàn thiện trích đo": f"Chào anh/chị {name}, trích đo đã hoàn thiện. Bên em đang tiến hành làm hồ sơ pháp lý, dự kiến xong vào ngày {date_str}.",
-        "4. Làm hồ sơ": f"Chào anh/chị {name}, hồ sơ đang được xử lý. Mời anh/chị qua văn phòng ký hồ sơ vào ngày {date_str} ạ.",
-        "5. Ký hồ sơ": f"Chào anh/chị {name}, hồ sơ đã ký xong. Bên em sẽ đi lấy xác nhận và nộp hồ sơ sớm nhất.",
-        "6. Lấy hồ sơ": f"Chào anh/chị {name}, bên em đã lấy hồ sơ về. Chuẩn bị đi nộp ạ.",
-        "7. Nộp hồ sơ": f"Chào anh/chị {name}, hồ sơ đã được nộp vào bộ phận một cửa. Giấy hẹn trả kết quả là ngày {date_str}. Khi nào có kết quả bên em sẽ báo ngay ạ.",
-        "8. Hoàn thành": f"Chào anh/chị {name}, chúc mừng anh/chị! Hồ sơ đã hoàn tất. Mời anh/chị qua văn phòng nhận kết quả ạ."
-    }
-    return msgs.get(stage, f"Chào anh/chị {name}, bên em báo tình trạng hồ sơ đang ở bước: {stage}.")
+    # Hàm này vẫn giữ để logic không bị lỗi, nhưng sẽ không hiển thị trên UI theo yêu cầu
+    return "" 
 
 # --- GOOGLE SHEETS & DRIVE API ---
 def get_gcp_creds(): 
@@ -519,13 +504,6 @@ def delete_forever(jid, u):
     if r: sh.delete_rows(r); log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}"); st.toast("Đã xóa vĩnh viễn!")
 
 # --- UI COMPONENTS ---
-def render_contact_buttons(phone):
-    if not phone: return ""
-    clean_phone = re.sub(r'\D', '', str(phone))
-    if len(clean_phone) < 9: return f"<span style='color: gray;'>SĐT: {phone}</span>"
-    zalo_link = f"https://zalo.me/{clean_phone}"; call_link = f"tel:{clean_phone}"
-    return f"""<div style="display: flex; gap: 10px; margin-bottom: 10px;"><a href="{zalo_link}" target="_blank" style="text-decoration: none;"><div style="background-color: #0068FF; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">💬 Chat Zalo</div></a><a href="{call_link}" style="text-decoration: none;"><div style="background-color: #28a745; color: white; padding: 6px 12px; border-radius: 6px; font-weight: bold; font-size: 14px;">📞 Gọi Điện</div></a></div>"""
-
 def change_menu(new_menu):
     st.session_state['menu_selection'] = new_menu
 
@@ -546,7 +524,7 @@ def render_square_menu(role):
             st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
             st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
 
-# --- RENDER CARD CONTENT ---
+# --- RENDER CARD CONTENT (FORM CHI TIẾT) ---
 def render_job_card_content(j, user, role, user_list):
     try: dl_dt = pd.to_datetime(j['deadline'])
     except: dl_dt = datetime.now() + timedelta(days=365)
@@ -556,11 +534,15 @@ def render_job_card_content(j, user, role, user_list):
     t1, t2, t3, t4 = st.tabs(["ℹ️ Chi tiết & File", "⚙️ Xử lý Hồ sơ", "💰 Tài Chính", "📜 Nhật ký"])
     
     with t1:
+        # Bỏ mẫu tin nhắn Zalo và nút chat/gọi điện
         st.subheader(f"👤 {j['customer_name']}")
-        with st.popover("💬 Mẫu Tin Nhắn Zalo", use_container_width=True):
-            msg_content = generate_zalo_message(j, dl_dt)
-            st.code(msg_content, language="markdown")
         
+        # Khôi phục hiển thị SĐT và Địa chỉ
+        c_info1, c_info2 = st.columns(2)
+        c_info1.write(f"📞 **SĐT:** {j['customer_phone']}")
+        c_info2.write(f"📍 **Địa chỉ:** {j['address']}")
+        st.markdown("---")
+
         if role == "Quản lý":
             with st.popover("✏️ Sửa Thông Tin"):
                 new_n = st.text_input("Tên", j['customer_name'], key=f"edit_name_{j['id']}")
@@ -569,7 +551,6 @@ def render_job_card_content(j, user, role, user_list):
                 if st.button("Lưu Thay Đổi", key=f"save_edit_{j['id']}"):
                     update_customer_info(j['id'], new_n, new_p, new_a, user); time.sleep(1); st.rerun()
         
-        st.markdown(render_contact_buttons(j['customer_phone']), unsafe_allow_html=True)
         st.markdown("**📂 File đính kèm:**")
         file_list = extract_files_from_log(j['logs'])
         if j['file_link'] and j['file_link'] not in [lnk for _, lnk in file_list]: file_list.insert(0, ("File gốc", j['file_link']))
@@ -675,23 +656,24 @@ def render_complex_list_view(df, user, role, user_list):
     """, unsafe_allow_html=True)
 
     # --- Header ---
-    cols_cfg = [0.5, 1.2, 1.5, 2, 2, 1.5, 1.2, 0.5]
-    h1, h2, h3, h4, h5, h6, h7, h8 = st.columns(cols_cfg)
-    h1.markdown("**STT**")
-    h2.markdown("**Mã Hồ Sơ**")
-    h3.markdown("**Thủ tục**")
-    h4.markdown("**Chủ hồ sơ**")
-    h5.markdown("**Thời gian quy định**")
-    h6.markdown("**Người thực hiện**")
-    h7.markdown("**Trạng thái**")
-    h8.markdown("**🔍**")
+    # Bỏ cột STT, Cột đầu tiên là Mã hồ sơ
+    # Tỉ lệ cột: [Mã, Thủ tục, Chủ hồ sơ, Thời gian, Người làm, Trạng thái, Toggle]
+    cols_cfg = [1.5, 1.5, 2.5, 2.5, 1.5, 1.2, 0.5]
+    h1, h2, h3, h4, h5, h6, h7 = st.columns(cols_cfg)
+    h1.markdown("**Mã Hồ Sơ**")
+    h2.markdown("**Thủ tục**")
+    h3.markdown("**Chủ hồ sơ**")
+    h4.markdown("**Thời gian quy định**")
+    h5.markdown("**Người thực hiện**")
+    h6.markdown("**Trạng thái**")
+    h7.markdown("**🔍**")
 
     if df.empty:
         st.info("Không có dữ liệu.")
         return
 
     for index, row in df.iterrows():
-        # Short ID
+        # Xử lý Mã ngắn: 251204-01
         short_id = str(row['id'])
         if len(short_id) > 6:
              display_id = f"{short_id[:-2]}-{short_id[-2:]}"
@@ -713,49 +695,67 @@ def render_complex_list_view(df, user, role, user_list):
         
         assignee = row['assigned_to'].split(' - ')[0] if row['assigned_to'] else "Chưa giao"
         
-        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(cols_cfg)
-        
-        with c1: st.write(f"#{index + 1}")
-        with c2: st.markdown(f"**{display_id}**")
-        with c3: st.markdown(f"<div class='proc-name'>{proc_name}</div>", unsafe_allow_html=True)
-        with c4:
-            clean_phone = row['customer_phone'].replace("'", "")
-            st.markdown(f"""
-            <div class='customer-name'>{row['customer_name']}</div>
-            <div class='sub-text'>📞 {clean_phone}</div>
-            <div class='sub-text'>📍 {row['address']}</div>
-            """, unsafe_allow_html=True)
-        with c5:
-            date_fmt = "%d/%m/%Y %H:%M"
-            dl_str = dl_dt.strftime(date_fmt) if dl_dt else "Không giới hạn"
-            start_str = start_dt.strftime(date_fmt)
-            st.markdown(f"""
-            <div class='time-text'>
-            {overdue_msg}
-            • Nhận: {start_str}<br>
-            • Hạn: <b>{dl_str}</b>
-            </div>
-            """, unsafe_allow_html=True)
-        with c6:
-            st.markdown(f"""
-            <div>👤 <b>{assignee}</b></div>
-            <div class='stage-tag'>Step: {row['current_stage'].split('. ')[0]}</div>
-            """, unsafe_allow_html=True)
-        with c7: st.markdown(get_status_badge_html(row), unsafe_allow_html=True)
-        with c8:
-            expand_key = f"exp_{row['id']}"
-            btn_label = "🔼" if st.session_state.get(expand_key, False) else "🔽"
-            if st.button(btn_label, key=f"btn_expand_{row['id']}", help="Xem chi tiết & Xử lý"):
-                st.session_state[expand_key] = not st.session_state.get(expand_key, False)
-                st.rerun()
+        # Lấy tên bước hiện tại (VD: Đo đạc) thay vì "Step 2"
+        current_step_name = row['current_stage'].split('. ')[1] if '. ' in row['current_stage'] else row['current_stage']
 
-        if st.session_state.get(f"exp_{row['id']}", False):
-            with st.container():
-                st.markdown("<div style='background-color: #f8f9fa; padding: 15px; border-radius: 10px; border: 1px solid #ddd; margin-bottom: 20px;'>", unsafe_allow_html=True)
+        # Dùng st.container(border=True) để tạo khung viền (thay cho CSS card custom)
+        with st.container(border=True):
+            c1, c2, c3, c4, c5, c6, c7 = st.columns(cols_cfg)
+            
+            # Cột 1: Mã hồ sơ (Bấm vào đây cũng mở rộng)
+            with c1: 
+                if st.button(display_id, key=f"btn_code_{row['id']}"):
+                    st.session_state[f"exp_{row['id']}"] = not st.session_state.get(f"exp_{row['id']}", False)
+                    st.rerun()
+            
+            # Cột 2: Thủ tục
+            with c2: st.markdown(f"<div class='proc-name'>{proc_name}</div>", unsafe_allow_html=True)
+            
+            # Cột 3: Chủ hồ sơ (Bấm vào tên cũng mở rộng)
+            with c3:
+                # Fix lỗi int replace bằng str()
+                clean_phone = str(row['customer_phone']).replace("'", "")
+                if st.button(f"{row['customer_name']}\n({clean_phone})", key=f"btn_name_{row['id']}", help="Xem chi tiết"):
+                    st.session_state[f"exp_{row['id']}"] = not st.session_state.get(f"exp_{row['id']}", False)
+                    st.rerun()
+                st.caption(f"📍 {row['address']}")
+
+            # Cột 4: Thời gian
+            with c4:
+                date_fmt = "%d/%m/%Y %H:%M"
+                dl_str = dl_dt.strftime(date_fmt) if dl_dt else "Không giới hạn"
+                start_str = start_dt.strftime(date_fmt)
+                st.markdown(f"""
+                <div class='time-text'>
+                {overdue_msg}
+                • Nhận: {start_str}<br>
+                • Hạn: <b>{dl_str}</b>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Cột 5: Người làm + Tên bước rõ ràng
+            with c5:
+                st.markdown(f"""
+                <div>👤 <b>{assignee}</b></div>
+                <div class='stage-tag'>{current_step_name}</div>
+                """, unsafe_allow_html=True)
+            
+            # Cột 6: Trạng thái
+            with c6: st.markdown(get_status_badge_html(row), unsafe_allow_html=True)
+            
+            # Cột 7: Toggle Button
+            with c7:
+                expand_key = f"exp_{row['id']}"
+                btn_label = "🔼" if st.session_state.get(expand_key, False) else "🔽"
+                if st.button(btn_label, key=f"btn_expand_{row['id']}", help="Xem chi tiết & Xử lý"):
+                    st.session_state[expand_key] = not st.session_state.get(expand_key, False)
+                    st.rerun()
+
+            # --- PHẦN CHI TIẾT (XỔ XUỐNG NGAY DƯỚI DÒNG) ---
+            if st.session_state.get(f"exp_{row['id']}", False):
+                st.markdown("---")
+                # Gọi hàm render nội dung chi tiết
                 render_job_card_content(row, user, role, user_list)
-                st.markdown("</div>", unsafe_allow_html=True)
-        
-        st.markdown("<hr style='margin: 5px 0;'>", unsafe_allow_html=True)
 
 # --- UI MAIN ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
@@ -892,7 +892,7 @@ else:
                     st.warning("Không tìm thấy hồ sơ nào phù hợp bộ lọc.")
                 else:
                     display_df = display_df.sort_values(by=['status', 'id'], ascending=[True, False])
-                    # Mặc định sử dụng List View Mới
+                    # Gọi hàm hiển thị mới
                     render_complex_list_view(display_df, user, role, user_list)
 
     elif sel == "🗄️ Lưu Trữ":
