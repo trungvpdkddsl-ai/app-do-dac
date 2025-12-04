@@ -90,7 +90,9 @@ def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
         date_str = d_obj.strftime('%d%m%y')
     except: date_str = "000000"; seq = "00"
     abbr = get_proc_abbr(proc_name) if proc_name else ""
-    return f"{date_str}-{seq}-{abbr} {name}"
+    proc_str = f"-{abbr}" if abbr else ""
+    clean_phone = str(phone).replace("'", "")
+    return f"{date_str}-{seq}{proc_str} {name} {clean_phone} {addr}"
 
 def extract_files_from_log(log_text):
     pattern = r"File: (.*?) - (https?://[^\s]+)"
@@ -135,11 +137,10 @@ def get_drive_id(link):
     try: match = re.search(r'/d/([a-zA-Z0-9_-]+)', link); return match.group(1) if match else None
     except: return None
 
-# --- HELPER UI ---
+# --- HELPER UI & CSS ---
 def get_status_badge_html(row):
     """Tạo badge trạng thái đẹp mắt"""
     status = row['status']
-    stage = row['current_stage']
     deadline = pd.to_datetime(row['deadline'], errors='coerce')
     now = datetime.now()
 
@@ -163,11 +164,37 @@ def get_status_badge_html(row):
         elif pd.notna(deadline) and now <= deadline <= now + timedelta(hours=24):
             color = "#fd7e14"; bg_color = "#fff3cd"; text = "⚠️ Sắp đến hạn"
 
-    return f"""<span style='background-color: {bg_color}; color: {color}; padding: 4px 8px; border-radius: 12px; font-weight: bold; font-size: 11px; border: 1px solid {color}; white-space: nowrap;'>{text}</span>"""
+    return f"""<span style='background-color: {bg_color}; color: {color}; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px; border: 1px solid {color}; white-space: nowrap;'>{text}</span>"""
 
-def generate_zalo_message(job_data, deadline_dt):
-    # Hàm này vẫn giữ để logic không bị lỗi, nhưng sẽ không hiển thị trên UI theo yêu cầu
-    return "" 
+def inject_custom_css():
+    st.markdown("""
+    <style>
+        /* CSS cho hàng tiêu đề và bảng danh sách */
+        .row-header { font-weight: bold; color: #333; border-bottom: 2px solid #ddd; padding-bottom: 5px; margin-bottom: 10px; font-size: 13px; }
+        .job-row { padding: 8px 0; border-bottom: 1px solid #f0f0f0; align-items: center; }
+        
+        /* Tinh chỉnh font chữ hiển thị */
+        .customer-name { color: #d63031; font-weight: bold; font-size: 14px; margin-bottom: 2px; }
+        .sub-text { font-size: 12px; color: #555; display: block; margin-top: 0px; }
+        .proc-name { color: #0984e3; font-weight: 600; font-size: 13px; }
+        .stage-tag { font-size: 11px; font-weight: bold; color: #2d3436; background: #dfe6e9; padding: 2px 6px; border-radius: 4px; }
+        .time-text { font-size: 11px; line-height: 1.3; color: #333; }
+        
+        /* CSS QUAN TRỌNG: Thu nhỏ nút bấm trong bảng chi tiết */
+        .compact-btn button {
+            padding: 0px 8px !important;
+            min-height: 28px !important;
+            height: 28px !important;
+            font-size: 12px !important;
+            margin-top: 0px !important;
+        }
+        /* Giảm khoảng cách giữa các phần tử trong expander */
+        div[data-testid="stExpanderDetails"] {
+            padding-top: 10px !important;
+        }
+        hr { margin: 10px 0px !important; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- GOOGLE SHEETS & DRIVE API ---
 def get_gcp_creds(): 
@@ -530,133 +557,131 @@ def render_job_card_content(j, user, role, user_list):
     except: dl_dt = datetime.now() + timedelta(days=365)
     proc_name = extract_proc_from_log(j['logs'])
 
-    # --- TABS LOGIC ---
-    t1, t2, t3, t4 = st.tabs(["ℹ️ Chi tiết & File", "⚙️ Xử lý Hồ sơ", "💰 Tài Chính", "📜 Nhật ký"])
+    # --- 1. THÔNG TIN KHÁCH HÀNG ---
+    c_info1, c_info2 = st.columns([1, 1])
+    with c_info1:
+        st.markdown(f"👤 **{j['customer_name']}**")
+        st.markdown(f"<span style='font-size:13px'>📞 {j['customer_phone']}</span>", unsafe_allow_html=True)
+    with c_info2:
+        st.markdown(f"<span style='font-size:13px'>📍 {j['address']}</span>", unsafe_allow_html=True)
+        if role == "Quản lý":
+            with st.popover("✏️ Sửa"):
+                new_n = st.text_input("Tên", j['customer_name'], key=f"en_{j['id']}")
+                new_p = st.text_input("SĐT", j['customer_phone'], key=f"ep_{j['id']}")
+                new_a = st.text_input("Đ/c", j['address'], key=f"ea_{j['id']}")
+                if st.button("Lưu", key=f"sv_{j['id']}"):
+                    update_customer_info(j['id'], new_n, new_p, new_a, user); time.sleep(1); st.rerun()
+
+    st.markdown("---")
+
+    # --- 2. TABS CHỨC NĂNG ---
+    t1, t2, t3, t4 = st.tabs(["📂 File & Hồ sơ", "⚙️ Xử lý", "💰 Tài Chính", "📜 Nhật ký"])
     
     with t1:
-        # Bỏ mẫu tin nhắn Zalo và nút chat/gọi điện
-        st.subheader(f"👤 {j['customer_name']}")
-        
-        # Khôi phục hiển thị SĐT và Địa chỉ
-        c_info1, c_info2 = st.columns(2)
-        c_info1.write(f"📞 **SĐT:** {j['customer_phone']}")
-        c_info2.write(f"📍 **Địa chỉ:** {j['address']}")
-        st.markdown("---")
-
-        if role == "Quản lý":
-            with st.popover("✏️ Sửa Thông Tin"):
-                new_n = st.text_input("Tên", j['customer_name'], key=f"edit_name_{j['id']}")
-                new_p = st.text_input("SĐT", j['customer_phone'], key=f"edit_phone_{j['id']}")
-                new_a = st.text_input("Địa chỉ", j['address'], key=f"edit_addr_{j['id']}")
-                if st.button("Lưu Thay Đổi", key=f"save_edit_{j['id']}"):
-                    update_customer_info(j['id'], new_n, new_p, new_a, user); time.sleep(1); st.rerun()
-        
-        st.markdown("**📂 File đính kèm:**")
+        st.markdown("###### 📎 Danh sách file:")
         file_list = extract_files_from_log(j['logs'])
-        if j['file_link'] and j['file_link'] not in [lnk for _, lnk in file_list]: file_list.insert(0, ("File gốc", j['file_link']))
-        if not file_list: st.caption("Chưa có file.")
+        if j['file_link'] and j['file_link'] not in [lnk for _, lnk in file_list]: 
+            file_list.insert(0, ("File gốc", j['file_link']))
+        
+        if not file_list: 
+            st.caption("Chưa có file nào.")
         else:
-            for idx, (fname, link) in enumerate(file_list):
-                file_id = get_drive_id(link); down_link = f"https://drive.google.com/uc?export=download&id={file_id}" if file_id else link
-                c1, c2, c3 = st.columns([0.5, 4, 2])
-                c1.markdown("📎")
-                c2.markdown(f"[{fname}]({link})")
-                c3.link_button("⬇️ Tải", down_link)
+            with st.container():
+                st.markdown('<div class="compact-btn">', unsafe_allow_html=True)
+                for idx, (fname, link) in enumerate(file_list):
+                    file_id = get_drive_id(link)
+                    down_link = f"https://drive.google.com/uc?export=download&id={file_id}" if file_id else link
+                    
+                    c_ico, c_name, c_view, c_down, c_del = st.columns([0.15, 3.5, 0.4, 0.4, 0.4])
+                    with c_ico: st.write("📄")
+                    with c_name: st.markdown(f"<span style='font-size:13px; position:relative; top:2px'>{fname}</span>", unsafe_allow_html=True)
+                    with c_view: st.link_button("👁️", link, help="Xem file") 
+                    with c_down: st.link_button("⬇️", down_link, help="Tải về")
+                    with c_del:
+                        if role == "Quản lý":
+                            if st.button("✕", key=f"del_{j['id']}_{idx}", help="Xóa file"):
+                                delete_file_system(j['id'], link, fname, user)
+                                st.toast("Đã xóa!"); time.sleep(1); st.rerun()
+                st.markdown('</div>', unsafe_allow_html=True)
 
     with t2:
         if j['status'] in ['Tạm dừng', 'Kết thúc sớm']:
-            st.error(f"HỒ SƠ ĐANG: {j['status'].upper()}")
+            st.error(f"TRẠNG THÁI: {j['status'].upper()}")
             if j['status'] == 'Tạm dừng' and st.button("▶️ Tiếp tục", key=f"r{j['id']}"): resume_job(j['id'], user); st.rerun()
         
         elif j['current_stage'] == "7. Nộp hồ sơ":
-            st.info("🏢 **ĐANG CHỜ KẾT QUẢ TỪ CƠ QUAN CHỨC NĂNG**")
-            c_date, c_btn = st.columns([2, 1])
-            new_date = c_date.date_input("📅 Ngày hẹn trả kết quả:", value=dl_dt.date(), key=f"d7_{j['id']}")
-            if c_btn.button("Lưu ngày hẹn", key=f"s7_{j['id']}"):
-                    update_deadline_custom(j['id'], new_date, user)
-                    time.sleep(0.5); st.rerun()
+            st.info("📅 **Chờ kết quả**")
+            c_d, c_b = st.columns([2,1])
+            new_date = c_d.date_input("Hẹn trả:", value=dl_dt.date(), key=f"d7_{j['id']}", label_visibility="collapsed")
+            if c_b.button("Lưu hẹn", key=f"s7_{j['id']}"):
+                 update_deadline_custom(j['id'], new_date, user); st.rerun()
             
             st.divider()
-            if st.button("✅ ĐÃ LẤY KẾT QUẢ VỀ & HOÀN THÀNH", type="primary", use_container_width=True, key=f"done_7_{j['id']}"):
-                    dep = 1 if safe_int(j.get('deposit'))==1 else 0; money = safe_int(j.get('survey_fee')); pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
-                    update_stage(j['id'], "7. Nộp hồ sơ", "Đã nhận kết quả đúng hạn.", [], user, "", 0, safe_int(j.get('is_survey_only')), dep, money, pdone)
-                    st.balloons(); time.sleep(1); st.rerun()
+            if st.button("✅ ĐÃ CÓ KẾT QUẢ - HOÀN THÀNH", type="primary", use_container_width=True, key=f"dn7_{j['id']}"):
+                 dep = 1 if safe_int(j.get('deposit'))==1 else 0; money = safe_int(j.get('survey_fee')); pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
+                 update_stage(j['id'], "7. Nộp hồ sơ", "Đã nhận kết quả.", [], user, "", 0, safe_int(j.get('is_survey_only')), dep, money, pdone)
+                 st.rerun()
             
-            c_stop1, c_stop2, c_back = st.columns([1, 1, 1])
-            if c_stop1.button("⏸️ Dừng", key=f"p{j['id']}"): st.session_state[f'pm_{j['id']}'] = True
-            with c_back.popover("⬅️ Trả hồ sơ"):
-                reason_back = st.text_input("Lý do:", key=f"reason_back_{j['id']}")
-                if st.button("Xác nhận", key=f"btn_back_{j['id']}"):
-                    return_to_previous_stage(j['id'], j['current_stage'], reason_back, user); st.rerun()
+            c1, c2 = st.columns(2)
+            if c1.button("⏸️ Dừng", key=f"p{j['id']}", use_container_width=True): st.session_state[f'pm_{j['id']}'] = True
+            with c2.popover("⬅️ Trả hồ sơ", use_container_width=True):
+                reason = st.text_input("Lý do:", key=f"rb_{j['id']}")
+                if st.button("Xác nhận", key=f"cb_{j['id']}"): return_to_previous_stage(j['id'], j['current_stage'], reason, user); st.rerun()
 
         else:
             with st.form(f"f{j['id']}"):
-                nt = st.text_area("Ghi chú")
-                fl = st.file_uploader("Upload File", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
+                nt = st.text_area("Ghi chú xử lý:", height=60)
+                fl = st.file_uploader("Thêm file:", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
+                
                 cur = j['current_stage']; nxt = get_next_stage_dynamic(cur, proc_name)
                 if not nxt: nxt = "8. Hoàn thành"
                 
-                asn_idx = 0
-                if user_list:
-                    try: asn_idx = user_list.index(j['assigned_to'])
-                    except: asn_idx = 0
-                
-                if nxt!="8. Hoàn thành":
-                     st.write(f"Chuyển sang: **{nxt}**")
-                     asn = st.selectbox("Giao việc cho:", user_list, index=asn_idx)
-                else:
-                     st.info("Sẽ hoàn thành hồ sơ này."); asn=""
+                c_next, c_assign = st.columns([1, 1])
+                with c_next: st.write(f"➡️ **{nxt}**")
+                with c_assign:
+                    if nxt != "8. Hoàn thành":
+                        idx = 0
+                        if user_list and j['assigned_to'] in user_list: idx = user_list.index(j['assigned_to'])
+                        asn = st.selectbox("Giao việc:", user_list, index=idx, label_visibility="collapsed")
+                    else: asn = ""
 
-                if st.form_submit_button("✅ Chuyển bước"): 
+                if st.form_submit_button("✅ Chuyển bước", type="primary", use_container_width=True): 
                     dep = 1 if safe_int(j.get('deposit'))==1 else 0; money = safe_int(j.get('survey_fee')); pdone = 1 if safe_int(j.get('is_paid'))==1 else 0
                     update_stage(j['id'], cur, nt, fl, user, asn, 0, safe_int(j.get('is_survey_only')), dep, money, pdone, None)
-                    st.session_state['uploader_key'] += 1; st.success("Xong!"); time.sleep(0.5); st.rerun()
+                    st.session_state['uploader_key'] += 1; st.rerun()
             
-            c_stop1, c_stop2, c_back = st.columns([1, 1, 1])
-            if c_stop1.button("⏸️ Dừng", key=f"p{j['id']}"): st.session_state[f'pm_{j['id']}'] = True
-            if c_stop2.button("⏹️ Kết thúc", key=f"t{j['id']}"): st.session_state[f'tm_{j['id']}'] = True
-            with c_back.popover("⬅️ Trả hồ sơ"):
-                reason_back = st.text_input("Lý do:", key=f"reason_back_{j['id']}")
-                if st.button("Xác nhận", key=f"btn_back_{j['id']}"):
-                    if return_to_previous_stage(j['id'], j['current_stage'], reason_back, user): st.success("Đã trả hồ sơ!"); time.sleep(1); st.rerun()
+            c_pause, c_term, c_back = st.columns(3)
+            if c_pause.button("⏸️", key=f"p{j['id']}", help="Tạm dừng"): st.session_state[f'pm_{j['id']}'] = True
+            if c_term.button("⏹️", key=f"t{j['id']}", help="Kết thúc sớm"): st.session_state[f'tm_{j['id']}'] = True
+            with c_back.popover("⬅️", help="Trả hồ sơ"):
+                reason = st.text_input("Lý do:", key=f"rb_{j['id']}")
+                if st.button("Trả về", key=f"cb_{j['id']}"): return_to_previous_stage(j['id'], j['current_stage'], reason, user); st.rerun()
 
         if st.session_state.get(f'pm_{j['id']}', False):
-            rs = st.text_input("Lý do dừng:", key=f"rs{j['id']}"); 
-            if st.button("OK", key=f"okp{j['id']}"): pause_job(j['id'], rs, user); st.rerun()
+            rs = st.text_input("Lý do dừng:", key=f"rs{j['id']}")
+            if st.button("Xác nhận dừng", key=f"okp{j['id']}"): pause_job(j['id'], rs, user); st.rerun()
+            
         if st.session_state.get(f'tm_{j['id']}', False):
-            rst = st.text_input("Lý do kết thúc:", key=f"rst{j['id']}"); 
-            if st.button("OK", key=f"okt{j['id']}"): terminate_job(j['id'], rst, user); st.rerun()
+            rst = st.text_input("Lý do kết thúc:", key=f"rst{j['id']}")
+            if st.button("Xác nhận kết thúc", key=f"okt{j['id']}"): terminate_job(j['id'], rst, user); st.rerun()
 
     with t3:
-        with st.form(f"money_{j['id']}"):
-            dep_ok = st.checkbox("Đã tạm ứng?", value=safe_int(j.get('deposit'))==1)
-            fee = st.number_input("Phí đo đạc", value=safe_int(j.get('survey_fee')), step=100000)
-            paid_ok = st.checkbox("Đã thu đủ?", value=safe_int(j.get('is_paid'))==1)
-            if st.form_submit_button("💾 Lưu"): update_finance_only(j['id'], dep_ok, fee, paid_ok, user); st.success("Lưu!"); st.rerun()
+        with st.form(f"mon_{j['id']}"):
+            c1, c2, c3 = st.columns([1, 2, 1])
+            c1.checkbox("Đã cọc", value=safe_int(j.get('deposit'))==1)
+            c2.number_input("Phí đo đạc:", value=safe_int(j.get('survey_fee')), step=100000, label_visibility="collapsed")
+            c3.checkbox("Đã thu đủ", value=safe_int(j.get('is_paid'))==1)
+            if st.form_submit_button("💾 Lưu TC", use_container_width=True): 
+                update_finance_only(j['id'], safe_int(j.get('deposit'))==1, safe_int(j.get('survey_fee')), safe_int(j.get('is_paid'))==1, user)
+                st.success("Đã lưu"); st.rerun()
     
     with t4:
-        st.text_area("Log", j['logs'], height=150, disabled=True)
+        st.text_area("", j['logs'], height=150, disabled=True, label_visibility="collapsed")
 
-# --- RENDER NEW LIST VIEW ---
+# --- RENDER LIST VIEW ---
 def render_complex_list_view(df, user, role, user_list):
-    st.markdown("""
-    <style>
-        .row-header {
-            font-weight: bold; color: #333; border-bottom: 2px solid #ddd; padding-bottom: 5px; margin-bottom: 10px; font-size: 14px;
-        }
-        .job-row {
-            padding: 10px 0; border-bottom: 1px solid #f0f0f0; align-items: center;
-        }
-        .customer-name { color: #d63031; font-weight: bold; font-size: 14px; }
-        .sub-text { font-size: 12px; color: #636e72; }
-        .proc-name { color: #0984e3; font-weight: 600; font-size: 14px; }
-        .stage-tag { font-size: 12px; font-weight: bold; color: #2d3436; background: #dfe6e9; padding: 2px 6px; border-radius: 4px; }
-        .time-text { font-size: 12px; line-height: 1.4; }
-    </style>
-    """, unsafe_allow_html=True)
+    inject_custom_css()
 
-    # --- Header ---
-    # Bỏ cột STT, Cột đầu tiên là Mã hồ sơ
     # Tỉ lệ cột: [Mã, Thủ tục, Chủ hồ sơ, Thời gian, Người làm, Trạng thái, Toggle]
     cols_cfg = [1.5, 1.5, 2.5, 2.5, 1.5, 1.2, 0.5]
     h1, h2, h3, h4, h5, h6, h7 = st.columns(cols_cfg)
@@ -673,12 +698,9 @@ def render_complex_list_view(df, user, role, user_list):
         return
 
     for index, row in df.iterrows():
-        # Xử lý Mã ngắn: 251204-01
         short_id = str(row['id'])
-        if len(short_id) > 6:
-             display_id = f"{short_id[:-2]}-{short_id[-2:]}"
-        else:
-             display_id = short_id
+        if len(short_id) > 6: display_id = f"{short_id[:-2]}-{short_id[-2:]}"
+        else: display_id = short_id
 
         proc_name = extract_proc_from_log(row['logs'])
         if not proc_name: proc_name = "Đo đạc khác"
@@ -694,56 +716,36 @@ def render_complex_list_view(df, user, role, user_list):
             overdue_msg = f"<span style='color:red; font-weight:bold'>Đã quá hạn {d} ngày {h} giờ</span><br>"
         
         assignee = row['assigned_to'].split(' - ')[0] if row['assigned_to'] else "Chưa giao"
-        
-        # Lấy tên bước hiện tại (VD: Đo đạc) thay vì "Step 2"
         current_step_name = row['current_stage'].split('. ')[1] if '. ' in row['current_stage'] else row['current_stage']
 
-        # Dùng st.container(border=True) để tạo khung viền (thay cho CSS card custom)
         with st.container(border=True):
             c1, c2, c3, c4, c5, c6, c7 = st.columns(cols_cfg)
             
-            # Cột 1: Mã hồ sơ (Bấm vào đây cũng mở rộng)
             with c1: 
                 if st.button(display_id, key=f"btn_code_{row['id']}"):
                     st.session_state[f"exp_{row['id']}"] = not st.session_state.get(f"exp_{row['id']}", False)
                     st.rerun()
             
-            # Cột 2: Thủ tục
             with c2: st.markdown(f"<div class='proc-name'>{proc_name}</div>", unsafe_allow_html=True)
             
-            # Cột 3: Chủ hồ sơ (Bấm vào tên cũng mở rộng)
             with c3:
-                # Fix lỗi int replace bằng str()
                 clean_phone = str(row['customer_phone']).replace("'", "")
                 if st.button(f"{row['customer_name']}\n({clean_phone})", key=f"btn_name_{row['id']}", help="Xem chi tiết"):
                     st.session_state[f"exp_{row['id']}"] = not st.session_state.get(f"exp_{row['id']}", False)
                     st.rerun()
                 st.caption(f"📍 {row['address']}")
 
-            # Cột 4: Thời gian
             with c4:
                 date_fmt = "%d/%m/%Y %H:%M"
                 dl_str = dl_dt.strftime(date_fmt) if dl_dt else "Không giới hạn"
                 start_str = start_dt.strftime(date_fmt)
-                st.markdown(f"""
-                <div class='time-text'>
-                {overdue_msg}
-                • Nhận: {start_str}<br>
-                • Hạn: <b>{dl_str}</b>
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown(f"""<div class='time-text'>{overdue_msg}• Nhận: {start_str}<br>• Hạn: <b>{dl_str}</b></div>""", unsafe_allow_html=True)
             
-            # Cột 5: Người làm + Tên bước rõ ràng
             with c5:
-                st.markdown(f"""
-                <div>👤 <b>{assignee}</b></div>
-                <div class='stage-tag'>{current_step_name}</div>
-                """, unsafe_allow_html=True)
+                st.markdown(f"""<div>👤 <b>{assignee}</b></div><div class='stage-tag'>{current_step_name}</div>""", unsafe_allow_html=True)
             
-            # Cột 6: Trạng thái
             with c6: st.markdown(get_status_badge_html(row), unsafe_allow_html=True)
             
-            # Cột 7: Toggle Button
             with c7:
                 expand_key = f"exp_{row['id']}"
                 btn_label = "🔼" if st.session_state.get(expand_key, False) else "🔽"
@@ -751,10 +753,8 @@ def render_complex_list_view(df, user, role, user_list):
                     st.session_state[expand_key] = not st.session_state.get(expand_key, False)
                     st.rerun()
 
-            # --- PHẦN CHI TIẾT (XỔ XUỐNG NGAY DƯỚI DÒNG) ---
             if st.session_state.get(f"exp_{row['id']}", False):
                 st.markdown("---")
-                # Gọi hàm render nội dung chi tiết
                 render_job_card_content(row, user, role, user_list)
 
 # --- UI MAIN ---
@@ -817,10 +817,8 @@ else:
         if df.empty: st.info("Trống!")
         else:
             active_df = df[df['status'] != 'Đã xóa']
-            if role != "Quản lý": 
-                user_filtered_df = active_df[active_df['assigned_to'].astype(str) == user]
-            else: 
-                user_filtered_df = active_df
+            if role != "Quản lý": user_filtered_df = active_df[active_df['assigned_to'].astype(str) == user]
+            else: user_filtered_df = active_df
             
             my_df = user_filtered_df[~user_filtered_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
             now = datetime.now()
@@ -892,7 +890,6 @@ else:
                     st.warning("Không tìm thấy hồ sơ nào phù hợp bộ lọc.")
                 else:
                     display_df = display_df.sort_values(by=['status', 'id'], ascending=[True, False])
-                    # Gọi hàm hiển thị mới
                     render_complex_list_view(display_df, user, role, user_list)
 
     elif sel == "🗄️ Lưu Trữ":
@@ -1084,7 +1081,6 @@ else:
             st.title("🗑️ Thùng Rác"); trash_df = df[df['status'] == 'Đã xóa']
             if trash_df.empty: st.success("Thùng rác trống!")
             else:
-                # Reuse the complex list view for consistency or create a simpler one for trash
                 render_complex_list_view(trash_df, user, role, user_list)
         else: st.error("Cấm truy cập!")
 
