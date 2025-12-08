@@ -2,4 +2,11 @@ streamlit
 pandas
 gspread
 google-auth
+google-auth-oauthlib
+google-auth-httplib2
 google-api-python-client
+bcrypt==4.1.2  # Phiên bản ổn định cho hash mật khẩu
+schedule==1.2.2  # Cho scheduler cải tiến
+streamlit-pagination==0.1.5  # Cho pagination trong list view (nếu dùng)
+requests
+python-dateutil  # Để xử lý datetime
