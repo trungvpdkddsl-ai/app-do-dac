@@ -11,9 +11,6 @@ import base64
 import calendar
 import io
 from google.oauth2.service_account import Credentials
-import bcrypt  # For secure password hashing
-from functools import lru_cache
-import schedule  # For improved scheduler (pip install schedule)
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 st.set_page_config(page_title="Đo Đạc Cloud V3-Pro", page_icon="☁️", layout="wide")
@@ -314,9 +311,7 @@ def delete_file_system(job_id: int, file_link: str, file_name: str, user: str):
 
 # --- AUTH & UTILS (Cải thiện hash với bcrypt) ---
 def make_hash(p: str) -> str:
-    """Hash với salt (bcrypt an toàn hơn SHA256)"""
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(p.encode(), salt).decode()
+    return hashlib.sha256(str.encode(p)).hexdigest()
 
 def send_telegram_msg(msg: str):
     if not TELEGRAM_TOKEN: 
@@ -344,8 +339,7 @@ def login_user(u: str, p: str):
     try: 
         cell = sh.find(u); 
         row = sh.row_values(cell.row); 
-        stored_hash = row[1].encode()
-        if bcrypt.checkpw(p.encode(), stored_hash):
+        if row[1] == make_hash(p):
             return row
         return None
     except: 
@@ -412,32 +406,29 @@ def get_daily_sequence_id() -> tuple[int, str]:
     return int(f"{prefix}{seq:02}"), f"{seq:02}"
 
 # --- SCHEDULER (Cải thiện với schedule) ---
-def job_scheduler():
-    def check_urgent():
-        now = datetime.now()
-        df = get_all_jobs_df()
-        if not df.empty:
-            active_df = df[df['status'] != 'Đã xóa']
-            active_df['dl_dt'] = pd.to_datetime(active_df['deadline'], errors='coerce')
-            urgent = active_df[(active_df['dl_dt'] > now) & (active_df['dl_dt'] <= now + timedelta(hours=24))]
-            if not urgent.empty:
-                msg_list = []
-                for _, j in urgent.iterrows():
-                    p_name = extract_proc_from_log(j['logs'])
-                    name = generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", p_name)
-                    left = int((j['dl_dt'] - now).total_seconds() / 3600)
-                    msg_list.append(f"🔸 <b>{name}</b> (Còn {left}h) - {j['assigned_to']}")
-                send_telegram_msg(f"⏰ <b>CẢNH BÁO 24H ({len(msg_list)} hồ sơ):</b>\n\n" + "\n".join(msg_list))
-    
-    schedule.every().day.at("08:00").do(check_urgent)
-    schedule.every().day.at("13:00").do(check_urgent)
-    
+def run_schedule_check():
     while True:
-        schedule.run_pending()
+        now = datetime.now()
+        if (now.hour == 8 or now.hour == 13) and now.minute < 5:
+            try:
+                df = get_all_jobs_df()
+                if not df.empty:
+                    active_df = df[df['status'] != 'Đã xóa']
+                    active_df['dl_dt'] = pd.to_datetime(active_df['deadline'], errors='coerce')
+                    urgent = active_df[(active_df['dl_dt'] > now) & (active_df['dl_dt'] <= now + timedelta(hours=24))]
+                    if not urgent.empty:
+                        msg_list = []
+                        for _, j in urgent.iterrows():
+                            p_name = extract_proc_from_log(j['logs'])
+                            name = generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", p_name)
+                            left = int((j['dl_dt'] - now).total_seconds() / 3600)
+                            msg_list.append(f"🔸 <b>{name}</b> (Còn {left}h) - {j['assigned_to']}")
+                        send_telegram_msg(f"⏰ <b>CẢNH BÁO 24H ({len(msg_list)} hồ sơ):</b>\n\n" + "\n".join(msg_list))
+            except: pass
         time.sleep(60)
 
 if 'scheduler_started' not in st.session_state:
-    threading.Thread(target=job_scheduler, daemon=True).start()
+    threading.Thread(target=run_schedule_check, daemon=True).start()
     st.session_state['scheduler_started'] = True
 
 # --- LOGIC ADD/UPDATE (Refactor update_stage) ---
@@ -880,7 +871,6 @@ def render_job_card_content(j: pd.Series, user: str, role: str, user_list: list[
         st.text_area("", j['logs'], height=150, disabled=True, label_visibility="collapsed")
 
 # --- RENDER LIST VIEW (Thêm pagination - cần pip install streamlit-pagination) ---
-from streamlit_pagination import paginate  # Import cho pagination
 
 def render_complex_list_view(df: pd.DataFrame, user: str, role: str, user_list: list[str]):
     inject_custom_css()
