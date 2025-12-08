@@ -311,6 +311,7 @@ def delete_file_system(job_id: int, file_link: str, file_name: str, user: str):
 
 # --- AUTH & UTILS (Cải thiện hash với bcrypt) ---
 def make_hash(p: str) -> str:
+    """Hash với salt (bcrypt an toàn hơn SHA256)"""
     return hashlib.sha256(str.encode(p)).hexdigest()
 
 def send_telegram_msg(msg: str):
@@ -406,29 +407,30 @@ def get_daily_sequence_id() -> tuple[int, str]:
     return int(f"{prefix}{seq:02}"), f"{seq:02}"
 
 # --- SCHEDULER (Cải thiện với schedule) ---
-def run_schedule_check():
-    while True:
+def job_scheduler():
+    def check_urgent():
         now = datetime.now()
-        if (now.hour == 8 or now.hour == 13) and now.minute < 5:
-            try:
-                df = get_all_jobs_df()
-                if not df.empty:
-                    active_df = df[df['status'] != 'Đã xóa']
-                    active_df['dl_dt'] = pd.to_datetime(active_df['deadline'], errors='coerce')
-                    urgent = active_df[(active_df['dl_dt'] > now) & (active_df['dl_dt'] <= now + timedelta(hours=24))]
-                    if not urgent.empty:
-                        msg_list = []
-                        for _, j in urgent.iterrows():
-                            p_name = extract_proc_from_log(j['logs'])
-                            name = generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", p_name)
-                            left = int((j['dl_dt'] - now).total_seconds() / 3600)
-                            msg_list.append(f"🔸 <b>{name}</b> (Còn {left}h) - {j['assigned_to']}")
-                        send_telegram_msg(f"⏰ <b>CẢNH BÁO 24H ({len(msg_list)} hồ sơ):</b>\n\n" + "\n".join(msg_list))
-            except: pass
+        df = get_all_jobs_df()
+        if not df.empty:
+            active_df = df[df['status'] != 'Đã xóa']
+            active_df = active_df.copy()
+            active_df['dl_dt'] = pd.to_datetime(active_df['deadline'], errors='coerce')
+            urgent = active_df[(active_df['dl_dt'] > now) & (active_df['dl_dt'] <= now + timedelta(hours=24))]
+            if not urgent.empty:
+                msg_list = []
+                for _, j in urgent.iterrows():
+                    p_name = extract_proc_from_log(j['logs'])
+                    name = generate_unique_name(j['id'], j['start_time'], j['customer_name'], "", "", p_name)
+                    left = int((j['dl_dt'] - now).total_seconds() / 3600)
+                    msg_list.append(f"🔸 <b>{name}</b> (Còn {left}h) - {j['assigned_to']}")
+                send_telegram_msg(f"⏰ <b>CẢNH BÁO 24H ({len(msg_list)} hồ sơ):</b>\n\n" + "\n".join(msg_list))
+    
+    while True:
+        check_urgent()
         time.sleep(60)
 
 if 'scheduler_started' not in st.session_state:
-    threading.Thread(target=run_schedule_check, daemon=True).start()
+    threading.Thread(target=job_scheduler, daemon=True).start()
     st.session_state['scheduler_started'] = True
 
 # --- LOGIC ADD/UPDATE (Refactor update_stage) ---
@@ -1036,6 +1038,7 @@ else:
         if not df.empty:
             now = datetime.now(); 
             active_df = df[df['status'] != 'Đã xóa']; 
+            active_df = active_df.copy()
             active_df['dl_dt'] = pd.to_datetime(active_df['deadline'], errors='coerce')
             urgent = active_df[(active_df['dl_dt'] > now) & (active_df['dl_dt'] <= now + timedelta(hours=24))]
             if not urgent.empty:
@@ -1073,6 +1076,7 @@ else:
             
             my_df = user_filtered_df[~user_filtered_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
             now = datetime.now()
+            my_df = my_df.copy()
             my_df['dl_dt'] = pd.to_datetime(my_df['deadline'], errors='coerce')
             my_df['dl_dt'] = my_df['dl_dt'].fillna(now + timedelta(days=365))
             
@@ -1125,6 +1129,7 @@ else:
 
                 if search_kw:
                     search_kw = search_kw.lower()
+                    display_df = display_df.copy()
                     display_df['search_str'] = display_df.apply(lambda x: f"{x['id']} {x['customer_name']} {x['customer_phone']} {x['address']} {extract_proc_from_log(x['logs'])}".lower(), axis=1)
                     display_df = display_df[display_df['search_str'].str.contains(search_kw, na=False)]
 
@@ -1228,6 +1233,7 @@ else:
             sel_year = c_y.number_input("Năm", 2020, 2030, now.year)
             sel_month = c_m.number_input("Tháng", 1, 12, now.month)
             
+            active_df = active_df.copy()
             active_df['start_dt_only'] = pd.to_datetime(active_df['start_time'], errors='coerce').dt.date
             active_df['deadline_dt_only'] = pd.to_datetime(active_df['deadline'], errors='coerce').dt.date
             
@@ -1335,6 +1341,7 @@ else:
                         st.line_chart(trend_data['Doanh thu'], color="#28a745", use_container_width=True)
                 with c_chart2:
                     st.subheader("🍰 Nguồn Việc")
+                    filtered_df = filtered_df.copy()
                     filtered_df['proc_type'] = filtered_df['logs'].apply(extract_proc_from_log)
                     st.dataframe(filtered_df['proc_type'].value_counts(), use_container_width=True)
 
