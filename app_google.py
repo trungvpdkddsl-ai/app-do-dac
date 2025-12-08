@@ -13,7 +13,7 @@ import io
 from google.oauth2.service_account import Credentials
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Đo Đạc Cloud V3-Pro (Restored)", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V3-Pro", page_icon="☁️", layout="wide")
 
 TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
 TELEGRAM_CHAT_ID = "-5055192262"
@@ -71,6 +71,18 @@ def get_next_stage_dynamic(current_stage, proc_name):
     if proc_name in ["Cung cấp thông tin", "Đính chính"]: return WORKFLOW_SHORT.get(current_stage)
     return WORKFLOW_FULL.get(current_stage)
 
+def check_bottleneck(deadline_str, current_stage):
+    if current_stage == "8. Hoàn thành" or not deadline_str: return False, 0, 0
+    try:
+        dl_dt = pd.to_datetime(deadline_str)
+        now = datetime.now()
+        if now > dl_dt: 
+            overdue_hours = int((now - dl_dt).total_seconds() / 3600)
+            limit = STAGE_SLA_HOURS.get(current_stage, 24)
+            return True, overdue_hours, limit
+    except: pass
+    return False, 0, 0
+
 def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
     try:
         jid_str = str(jid); seq = jid_str[-2:] 
@@ -90,6 +102,29 @@ def extract_files_from_log(log_text):
         return [("File cũ", l) for l in raw_links]
     return matches
 
+def format_precise_time(td):
+    total_seconds = int(td.total_seconds())
+    sign = "-" if total_seconds < 0 else ""
+    total_seconds = abs(total_seconds)
+    days = total_seconds // 86400
+    hours = (total_seconds % 86400) // 3600
+    minutes = (total_seconds % 3600) // 60
+    parts = []
+    if days > 0: parts.append(f"{days} ngày")
+    if hours > 0: parts.append(f"{hours} giờ")
+    parts.append(f"{minutes} phút")
+    return f"{sign}{' '.join(parts)}" if parts else "0 phút"
+
+def get_processing_duration(logs, current_stage):
+    if current_stage == "8. Hoàn thành" or not logs: return timedelta(0), None
+    try:
+        matches = re.findall(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', str(logs))
+        if matches:
+            last_dt = datetime.strptime(matches[-1], "%Y-%m-%d %H:%M:%S")
+            return datetime.now() - last_dt, last_dt
+    except: pass
+    return timedelta(0), None
+
 def calculate_deadline(start_date, hours_to_add):
     if hours_to_add == 0: return None
     current_date = start_date; added_hours = 0
@@ -102,8 +137,9 @@ def get_drive_id(link):
     try: match = re.search(r'/d/([a-zA-Z0-9_-]+)', link); return match.group(1) if match else None
     except: return None
 
-# --- HELPER UI & CSS ---
+# --- HELPER UI & CSS (SỬA LOGIC HIỂN THỊ BADGE) ---
 def get_status_badge_html(row):
+    """Tạo badge trạng thái đẹp mắt"""
     status = row['status']
     deadline = pd.to_datetime(row['deadline'], errors='coerce')
     now = datetime.now()
@@ -114,6 +150,7 @@ def get_status_badge_html(row):
     text = "Đang thực hiện"
     
     if status == "Tạm dừng":
+        # Check nếu tạm dừng do chưa thanh toán ở bước cuối
         if "Hoàn thành - Chưa thanh toán" in logs:
             color = "#fd7e14"; bg_color = "#fff3cd"; text = "⚠️ Xong - Chưa TT"
         else:
@@ -125,8 +162,10 @@ def get_status_badge_html(row):
     elif status == "Kết thúc sớm":
         color = "#343a40"; bg_color = "#e2e6ea"; text = "⏹️ Kết thúc"
     else:
+        # Check quá hạn
         if pd.notna(deadline) and now > deadline:
             color = "#dc3545"; bg_color = "#ffe6e6"; text = "🔴 Quá hạn"
+        # Check sắp đến hạn (24h)
         elif pd.notna(deadline) and now <= deadline <= now + timedelta(hours=24):
             color = "#fd7e14"; bg_color = "#fff3cd"; text = "⚠️ Sắp đến hạn"
 
@@ -148,22 +187,17 @@ def inject_custom_css():
     </style>
     """, unsafe_allow_html=True)
 
-# --- GOOGLE SHEETS & DRIVE API (WITH CACHING RESTORED FOR PERFORMANCE) ---
+# --- GOOGLE SHEETS & DRIVE API ---
 def get_gcp_creds(): 
     return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
 
-@st.cache_resource
-def get_gspread_client():
-    creds = get_gcp_creds()
-    return gspread.authorize(creds)
-
 def get_sheet(sheet_name="DB_DODAC"):
-    try: client = get_gspread_client(); return client.open(sheet_name).sheet1
+    try: creds = get_gcp_creds(); client = gspread.authorize(creds); return client.open(sheet_name).sheet1
     except: return None
 
 def get_users_sheet():
     try:
-        client = get_gspread_client(); sh = client.open("DB_DODAC")
+        creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC")
         try: return sh.worksheet("USERS")
         except: 
             ws = sh.add_worksheet(title="USERS", rows="100", cols="5")
@@ -172,7 +206,7 @@ def get_users_sheet():
 
 def get_audit_sheet():
     try:
-        client = get_gspread_client(); sh = client.open("DB_DODAC")
+        creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC")
         try: return sh.worksheet("AUDIT_LOGS")
         except: 
             ws = sh.add_worksheet(title="AUDIT_LOGS", rows="1000", cols="4")
@@ -190,6 +224,8 @@ def upload_file_via_script(file_obj, sub_folder_name):
         if response.status_code == 200:
             res_json = response.json()
             if res_json.get("status") == "success": return res_json.get("link"), file_obj.name
+            else: st.error(f"Lỗi Script: {res_json.get('message')}")
+        else: st.error(f"Lỗi mạng: {response.text}")
     except Exception as e: st.error(f"Lỗi Upload: {e}")
     return None, None
 
@@ -207,7 +243,6 @@ def delete_file_system(job_id, file_link, file_name, user):
         sh.update_cell(r, 11, new_log)
         if sh.cell(r, 10).value == file_link: sh.update_cell(r, 10, "")
         log_to_audit(user, "DELETE_FILE", f"Job {job_id}: Deleted file {file_name}")
-        get_all_jobs_df.clear()
 
 # --- AUTH & UTILS ---
 def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
@@ -245,22 +280,18 @@ def delete_user_permanently(u):
     try: cell = sh.find(u); sh.delete_rows(cell.row); get_all_users_cached.clear(); return True
     except: return False
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=60)
 def get_all_users_cached():
     sh = get_users_sheet()
     return pd.DataFrame(sh.get_all_records()) if sh else pd.DataFrame()
 
 def get_all_users(): return get_all_users_cached()
-
-def update_user_role(u, r): 
-    sh = get_users_sheet(); c = sh.find(u); sh.update_cell(c.row, 4, r); get_all_users_cached.clear()
-
+def update_user_role(u, r): sh = get_users_sheet(); c = sh.find(u); sh.update_cell(c.row, 4, r); get_all_users_cached.clear()
 def get_active_users_list(): 
     df = get_all_users_cached()
     if df.empty: return []
     return df[df['role']!='Chưa cấp quyền'].apply(lambda x: f"{x['username']} - {x['fullname']}", axis=1).tolist()
 
-@st.cache_data(ttl=60)
 def get_all_jobs_df():
     sh = get_sheet(); 
     if sh is None: return pd.DataFrame()
@@ -329,7 +360,6 @@ def add_job(n, p, a, proc, f, u, asn):
     asn_clean = asn.split(" - ")[0] if asn else ""
     
     sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, 0, 0, 0, 0])
-    get_all_jobs_df.clear()
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
     
     type_msg = f"({proc.upper()})"
@@ -380,7 +410,6 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
             nlog = f"\n[{now}] {u}: {stg}->{nxt}{assign_str} | Note: {nt}{log_file_str}"
             sh.update_cell(r, 11, olog + nlog)
             if nxt=="8. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
-            get_all_jobs_df.clear()
             log_to_audit(u, "UPDATE_STAGE", f"ID: {jid}, {stg} -> {nxt}")
             send_telegram_msg(f"✅ <b>CẬP NHẬT</b>\n📂 <b>{full_code}</b>\n{stg} ➡ <b>{nxt}</b>\n👤 {u}{assign_tele}")
 
@@ -392,7 +421,6 @@ def update_deadline_custom(jid, new_date, u):
         olog = sh.cell(r, 11).value
         nlog = f"\n[{datetime.now()}] {u}: 📅 CẬP NHẬT NGÀY HẸN TRẢ: {new_date.strftime('%d/%m/%Y')}"
         sh.update_cell(r, 11, olog + nlog)
-        get_all_jobs_df.clear()
         log_to_audit(u, "UPDATE_DEADLINE", f"ID: {jid} -> {new_date}")
         st.toast("Đã lưu ngày hẹn mới!")
 
@@ -421,7 +449,6 @@ def return_to_previous_stage(jid, current_stage, reason, u):
                 nlog = f"\n[{datetime.now()}] {u}: ⬅️ TRẢ HỒ SƠ ({current_stage} -> {prev_stage}) | Lý do: {reason}"
                 sh.update_cell(r, 11, olog + nlog)
                 full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], proc_name)
-                get_all_jobs_df.clear()
                 log_to_audit(u, "RETURN_JOB", f"ID: {jid}, {current_stage} -> {prev_stage}")
                 send_telegram_msg(f"↩️ <b>TRẢ HỒ SƠ</b>\n📂 <b>{full_code}</b>\n{current_stage} ➡ <b>{prev_stage}</b>\n👤 Bởi: {u}\n⚠️ Lý do: {reason}")
                 return True
@@ -433,7 +460,7 @@ def update_customer_info(jid, new_name, new_phone, new_addr, u):
     if r:
         sh.update_cell(r, 3, new_name); sh.update_cell(r, 4, f"'{new_phone}"); sh.update_cell(r, 5, new_addr)
         olog = sh.cell(r, 11).value; nlog = f"\n[{datetime.now()}] {u}: ✏️ ADMIN SỬA THÔNG TIN"
-        sh.update_cell(r, 11, olog + nlog); log_to_audit(u, "EDIT_INFO", f"ID: {jid}"); get_all_jobs_df.clear(); st.toast("Đã cập nhật thông tin!")
+        sh.update_cell(r, 11, olog + nlog); log_to_audit(u, "EDIT_INFO", f"ID: {jid}"); st.toast("Đã cập nhật thông tin!")
 
 def update_finance_only(jid, deposit_ok, fee_amount, is_paid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
@@ -441,7 +468,6 @@ def update_finance_only(jid, deposit_ok, fee_amount, is_paid, u):
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 13, 1 if deposit_ok else 0); sh.update_cell(r, 14, safe_int(fee_amount)); sh.update_cell(r, 15, 1 if is_paid else 0)
-        get_all_jobs_df.clear()
         log_to_audit(u, "UPDATE_FINANCE", f"ID: {jid}, Fee: {fee_amount}")
         send_telegram_msg(f"💰 <b>TÀI CHÍNH</b>\n📂 <b>{full_code}</b>\n👤 {u}\nPhí: {fee_amount:,} VNĐ")
 
@@ -451,7 +477,6 @@ def pause_job(jid, rs, u):
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 7, "Tạm dừng"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: TẠM DỪNG: {rs}")
-        get_all_jobs_df.clear()
         log_to_audit(u, "PAUSE_JOB", f"ID: {jid}")
         send_telegram_msg(f"⛔ <b>TẠM DỪNG</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
@@ -461,7 +486,6 @@ def resume_job(jid, u):
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 7, "Đang xử lý"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KHÔI PHỤC")
-        get_all_jobs_df.clear()
         log_to_audit(u, "RESUME_JOB", f"ID: {jid}")
         send_telegram_msg(f"▶️ <b>KHÔI PHỤC</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}")
 
@@ -471,21 +495,20 @@ def terminate_job(jid, rs, u):
         row_data = sh.row_values(r)
         full_code = generate_unique_name(jid, row_data[1], row_data[2], row_data[3], row_data[4], extract_proc_from_log(row_data[10]))
         sh.update_cell(r, 7, "Kết thúc sớm"); olog = sh.cell(r, 11).value; sh.update_cell(r, 11, olog + f"\n[{datetime.now()}] {u}: KẾT THÚC SỚM: {rs}")
-        get_all_jobs_df.clear()
         log_to_audit(u, "TERMINATE_JOB", f"ID: {jid}")
         send_telegram_msg(f"⏹️ <b>KẾT THÚC SỚM</b>\n📂 <b>{full_code}</b>\n👤 Bởi: {u}\n📝 Lý do: {rs}")
 
 def move_to_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
-    if r: sh.update_cell(r, 7, "Đã xóa"); get_all_jobs_df.clear(); log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}"); st.toast("Đã chuyển vào thùng rác!")
+    if r: sh.update_cell(r, 7, "Đã xóa"); log_to_audit(u, "MOVE_TO_TRASH", f"ID: {jid}"); st.toast("Đã chuyển vào thùng rác!")
 
 def restore_from_trash(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
-    if r: sh.update_cell(r, 7, "Đang xử lý"); get_all_jobs_df.clear(); log_to_audit(u, "RESTORE_JOB", f"ID: {jid}"); st.toast("Đã khôi phục hồ sơ!")
+    if r: sh.update_cell(r, 7, "Đang xử lý"); log_to_audit(u, "RESTORE_JOB", f"ID: {jid}"); st.toast("Đã khôi phục hồ sơ!")
 
 def delete_forever(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
-    if r: sh.delete_rows(r); get_all_jobs_df.clear(); log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}"); st.toast("Đã xóa vĩnh viễn!")
+    if r: sh.delete_rows(r); log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}"); st.toast("Đã xóa vĩnh viễn!")
 
 # --- UI COMPONENTS ---
 def change_menu(new_menu):
@@ -635,7 +658,7 @@ def render_job_card_content(j, user, role, user_list):
             # Kết thúc sớm không cần check thanh toán nữa
             if st.button("Xác nhận kết thúc", key=f"okt{j['id']}"): terminate_job(j['id'], rst, user); st.rerun()
 
-    # --- TAB 3: TÀI CHÍNH ---
+    # --- TAB 3: TÀI CHÍNH (Đã cập nhật logic mới) ---
     with t3:
         with st.form(f"mon_{j['id']}"):
             # Logic riêng cho Tách thửa
