@@ -1,4 +1,4 @@
-# app_google_optimized.py
+# app_google_no_plotly.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -14,8 +14,6 @@ import calendar
 import io
 import json
 from google.oauth2.service_account import Credentials
-import plotly.express as px
-import plotly.graph_objects as go
 from collections import defaultdict
 
 # ==================== CẤU HÌNH HỆ THỐNG NÂNG CAO ====================
@@ -111,7 +109,6 @@ def safe_int(value, default=0):
     if pd.isna(value) or value == "":
         return default
     try:
-        # Xử lý nhiều định dạng số
         if isinstance(value, (int, float)):
             return int(value)
         clean = str(value).replace(",", "").replace(".", "").strip()
@@ -170,7 +167,6 @@ def calculate_working_hours(start_dt, end_dt=None):
     current = start_dt
     
     while current < end_dt:
-        # Chỉ tính giờ làm việc trong ngày (8h-17h)
         if current.weekday() < 5:  # Thứ 2-6
             hour_start = max(current.hour, 8)
             hour_end = min(current.hour + 1, 17)
@@ -190,7 +186,6 @@ def calculate_deadline(start_date, hours_to_add):
     
     while added_hours < hours_to_add:
         current_date += timedelta(hours=1)
-        # Chỉ tính giờ làm việc (8h-17h, thứ 2-6)
         if current_date.weekday() < 5 and 8 <= current_date.hour < 17:
             added_hours += 1
     
@@ -213,8 +208,8 @@ def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
         seq = "01"
     
     abbr = get_proc_abbr(proc_name)
-    clean_phone = str(phone).replace("'", "").replace(" ", "")[-9:]  # Lấy 9 số cuối
-    clean_name = name.strip()[:30]  # Giới hạn độ dài
+    clean_phone = str(phone).replace("'", "").replace(" ", "")[-9:]
+    clean_name = name.strip()[:30]
     
     return f"{date_str}-{seq}{'-' + abbr if abbr else ''} {clean_name} {clean_phone}"
 
@@ -224,7 +219,6 @@ def extract_files_from_log(log_text):
     matches = re.findall(pattern, str(log_text))
     
     if not matches:
-        # Tìm link trực tiếp
         raw_links = re.findall(r'(https?://drive\.google\.com/[^\s]+)', str(log_text))
         return [("File đính kèm", l) for l in raw_links]
     
@@ -259,7 +253,6 @@ def get_status_badge(status, deadline=None, logs=""):
     
     config = status_config.get(status, status_config["Đang xử lý"])
     
-    # Kiểm tra quá hạn
     if status == "Đang xử lý" and deadline:
         try:
             dl_dt = pd.to_datetime(deadline)
@@ -270,7 +263,6 @@ def get_status_badge(status, deadline=None, logs=""):
         except:
             pass
     
-    # Kiểm tra tạm dừng do chưa thanh toán
     if status == "Tạm dừng" and "Hoàn thành - Chưa thanh toán" in str(logs):
         config = {"color": "#fd7e14", "bg": "#fff3cd", "text": "💰 Chưa thanh toán", "icon": "💰"}
     
@@ -324,7 +316,6 @@ def get_all_jobs_df():
     df = get_sheet_data("DB_DODAC")
     
     if not df.empty:
-        # Đảm bảo cột cần thiết
         required_columns = ['id', 'start_time', 'customer_name', 'customer_phone', 
                            'address', 'current_stage', 'status', 'assigned_to', 
                            'deadline', 'file_link', 'logs']
@@ -333,19 +324,16 @@ def get_all_jobs_df():
             if col not in df.columns:
                 df[col] = ""
         
-        # Chuyển đổi kiểu dữ liệu
         df['id'] = df['id'].apply(safe_int)
         df['start_dt'] = pd.to_datetime(df['start_time'], errors='coerce')
         df['deadline_dt'] = pd.to_datetime(df['deadline'], errors='coerce')
         
-        # Cột tài chính
         financial_cols = ['deposit', 'survey_fee', 'is_paid', 'is_survey_only']
         for col in financial_cols:
             if col not in df.columns:
                 df[col] = 0
             df[col] = df[col].apply(safe_int)
         
-        # Thêm cột thông tin bổ sung
         df['proc_name'] = df['logs'].apply(extract_proc_from_log)
         df['duration'] = (datetime.now() - df['start_dt']).dt.days
         df['is_overdue'] = df.apply(
@@ -360,7 +348,6 @@ def get_users_df():
     """Lấy dữ liệu người dùng"""
     df = get_sheet_data("DB_DODAC", "USERS")
     if df.empty:
-        # Tạo cấu trúc mặc định
         df = pd.DataFrame(columns=['username', 'password', 'fullname', 'role', 'email', 'phone', 'active'])
     return df
 
@@ -372,63 +359,7 @@ def get_audit_logs_df():
         df = pd.DataFrame(columns=['Timestamp', 'User', 'Action', 'Details', 'IP_Address'])
     return df
 
-def update_sheet_cell(sheet_name, cell_range, values):
-    """Cập nhật ô trong Google Sheets"""
-    try:
-        client = get_gspread_client()
-        spreadsheet = client.open(sheet_name)
-        ws = spreadsheet.sheet1
-        ws.update(cell_range, values)
-        return True
-    except Exception as e:
-        st.error(f"Lỗi cập nhật: {e}")
-        return False
-
-# ==================== FILE MANAGEMENT ====================
-def upload_file_to_drive(file_obj, folder_name):
-    """Upload file lên Google Drive"""
-    if not file_obj:
-        return None, None
-    
-    try:
-        file_content = file_obj.read()
-        file_base64 = base64.b64encode(file_content).decode('utf-8')
-        
-        payload = {
-            "action": "upload",
-            "filename": file_obj.name,
-            "mime_type": file_obj.type,
-            "file_base64": file_base64,
-            "folder_id": DRIVE_FOLDER_ID,
-            "sub_folder_name": folder_name
-        }
-        
-        response = requests.post(APPS_SCRIPT_URL, json=payload, timeout=30)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("status") == "success":
-                return result.get("link"), file_obj.name
-            else:
-                st.error(f"Lỗi từ script: {result.get('message')}")
-        else:
-            st.error(f"Lỗi kết nối: {response.status_code}")
-            
-    except Exception as e:
-        st.error(f"Lỗi upload: {str(e)}")
-    
-    return None, None
-
-def delete_file_from_drive(file_id):
-    """Xóa file từ Google Drive"""
-    try:
-        payload = {"action": "delete", "file_id": file_id}
-        response = requests.post(APPS_SCRIPT_URL, json=payload, timeout=10)
-        return response.status_code == 200
-    except:
-        return False
-
-# ==================== AUTHENTICATION & SECURITY ====================
+# ==================== AUTHENTICATION ====================
 def hash_password(password):
     """Hash mật khẩu với salt"""
     salt = "DODAC_SYSTEM_2024"
@@ -448,11 +379,9 @@ def authenticate_user(username, password):
     
     user_data = user_row.iloc[0]
     
-    # Kiểm tra active
     if 'active' in user_data and str(user_data['active']).lower() == 'false':
         return None
     
-    # Kiểm tra password
     if user_data['password'] == hash_password(password):
         return {
             'username': user_data['username'],
@@ -464,342 +393,31 @@ def authenticate_user(username, password):
     
     return None
 
-def register_user(username, password, fullname, email="", phone=""):
-    """Đăng ký người dùng mới"""
+def get_active_users_list():
+    """Lấy danh sách người dùng đang hoạt động"""
     users_df = get_users_df()
+    if users_df.empty:
+        return []
     
-    # Kiểm tra username tồn tại
-    if username in users_df['username'].values:
-        return False, "Username đã tồn tại"
+    active_users = users_df[
+        (users_df['role'] != 'Chưa cấp quyền') & 
+        (users_df['active'].astype(str).str.lower() == 'true')
+    ]
     
-    # Validate username
-    if not re.match(r'^[a-zA-Z0-9_]{3,20}$', username):
-        return False, "Username chỉ cho phép chữ, số và gạch dưới (3-20 ký tự)"
-    
-    # Tạo user mới
-    new_user = {
-        'username': username,
-        'password': hash_password(password),
-        'fullname': fullname,
-        'role': 'Chưa cấp quyền',
-        'email': email,
-        'phone': phone,
-        'active': True,
-        'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    
-    try:
-        # Thêm vào Google Sheets
-        client = get_gspread_client()
-        spreadsheet = client.open("DB_DODAC")
-        
-        try:
-            ws = spreadsheet.worksheet("USERS")
-        except:
-            ws = spreadsheet.add_worksheet(title="USERS", rows="1000", cols="10")
-            ws.append_row(['username', 'password', 'fullname', 'role', 'email', 'phone', 'active', 'created_at'])
-        
-        ws.append_row(list(new_user.values()))
-        
-        # Clear cache
-        get_users_df.clear()
-        
-        return True, "Đăng ký thành công, chờ duyệt"
-    except Exception as e:
-        return False, f"Lỗi hệ thống: {str(e)}"
-
-# ==================== NOTIFICATION SYSTEM ====================
-def send_telegram_notification(message, parse_mode="HTML"):
-    """Gửi thông báo Telegram"""
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    
-    def send():
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-            data = {
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-                "parse_mode": parse_mode,
-                "disable_web_page_preview": True
-            }
-            requests.post(url, data=data, timeout=10)
-        except:
-            pass
-    
-    threading.Thread(target=send, daemon=True).start()
-
-def send_user_notification(user_id, message, notification_type="info"):
-    """Gửi thông báo cho người dùng cụ thể"""
-    # TODO: Triển khai hệ thống thông báo nội bộ
-    pass
-
-# ==================== AUDIT LOGGING ====================
-def log_audit_action(user, action, details, ip_address=""):
-    """Ghi log hành động"""
-    try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = [timestamp, user, action, details, ip_address]
-        
-        client = get_gspread_client()
-        spreadsheet = client.open("DB_DODAC")
-        
-        try:
-            ws = spreadsheet.worksheet("AUDIT_LOGS")
-        except:
-            ws = spreadsheet.add_worksheet(title="AUDIT_LOGS", rows="10000", cols="5")
-            ws.append_row(['Timestamp', 'User', 'Action', 'Details', 'IP_Address'])
-        
-        ws.append_row(log_entry)
-        get_audit_logs_df.clear()
-        
-    except Exception as e:
-        print(f"Lỗi ghi audit log: {e}")
-
-# ==================== JOB MANAGEMENT FUNCTIONS ====================
-def create_new_job(customer_info, procedure, files, assigned_to, created_by):
-    """Tạo hồ sơ mới"""
-    try:
-        # Lấy ID tiếp theo
-        df = get_all_jobs_df()
-        today = datetime.now().date()
-        
-        if df.empty:
-            seq = 1
-        else:
-            today_jobs = df[df['start_dt'].dt.date == today]
-            if today_jobs.empty:
-                seq = 1
-            else:
-                last_id = today_jobs['id'].max()
-                seq = int(str(last_id)[-2:]) + 1 if len(str(last_id)) >= 2 else 1
-        
-        job_id = int(f"{today.strftime('%y%m%d')}{seq:02d}")
-        
-        # Tạo thông tin cơ bản
-        now = datetime.now()
-        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Tạo tên duy nhất
-        unique_name = generate_unique_name(
-            job_id, now_str, 
-            customer_info['name'],
-            customer_info['phone'],
-            customer_info['address'],
-            procedure
-        )
-        
-        # Upload files nếu có
-        file_links = []
-        if files:
-            for file in files:
-                link, filename = upload_file_to_drive(file, unique_name)
-                if link:
-                    file_links.append(f"File: {filename} - {link}")
-        
-        # Tính deadline mặc định
-        deadline = calculate_deadline(now, 24 * 30)  # 30 ngày làm việc
-        
-        # Tạo log entry
-        file_log = " | ".join(file_links) if file_links else ""
-        assign_log = f" -> Giao: {assigned_to}" if assigned_to else ""
-        initial_log = f"[{now_str}] {created_by}: Khởi tạo ({procedure}){assign_log} {file_log}"
-        
-        # Tạo dữ liệu cho Google Sheets
-        job_data = [
-            job_id,                    # ID
-            now_str,                   # start_time
-            customer_info['name'],     # customer_name
-            f"'{customer_info['phone']}",  # customer_phone
-            customer_info['address'],  # address
-            "1. Tạo mới",              # current_stage
-            "Đang xử lý",              # status
-            assigned_to.split(' - ')[0] if assigned_to else "",  # assigned_to
-            deadline.strftime("%Y-%m-%d %H:%M:%S") if deadline else "",  # deadline
-            file_links[0].split(' - ')[1] if file_links else "",  # file_link
-            initial_log,               # logs
-            0,  # deposit
-            PROCEDURE_PRICES.get(procedure, 1500000),  # survey_fee
-            0,  # is_paid
-            0   # is_survey_only
-        ]
-        
-        # Lưu vào Google Sheets
-        client = get_gspread_client()
-        spreadsheet = client.open("DB_DODAC")
-        ws = spreadsheet.sheet1
-        ws.append_row(job_data)
-        
-        # Clear cache
-        get_all_jobs_df.clear()
-        
-        # Ghi log audit
-        log_audit_action(
-            created_by, 
-            "CREATE_JOB", 
-            f"ID: {job_id}, Tên: {customer_info['name']}, Thủ tục: {procedure}"
-        )
-        
-        # Gửi thông báo Telegram
-        telegram_msg = f"""
-🚀 <b>HỒ SƠ MỚI #{seq:02d}</b>
-📂 <b>{unique_name}</b>
-📋 Thủ tục: {procedure}
-👤 Khách hàng: {customer_info['name']}
-📞 Điện thoại: {customer_info['phone']}
-📍 Địa chỉ: {customer_info['address'][:50]}...
-👷 Người phụ trách: {assigned_to.split(' - ')[0] if assigned_to else 'Chưa giao'}
-📎 Files: {len(files)} file đính kèm
-        """
-        send_telegram_notification(telegram_msg)
-        
-        return job_id, unique_name
-        
-    except Exception as e:
-        st.error(f"Lỗi tạo hồ sơ: {str(e)}")
-        return None, None
-
-def update_job_stage(job_id, current_stage, note, files, updated_by, assigned_to=None, 
-                    financial_info=None, result_date=None):
-    """Cập nhật trạng thái công việc"""
-    try:
-        df = get_all_jobs_df()
-        job_row = df[df['id'] == job_id]
-        
-        if job_row.empty:
-            st.error("Không tìm thấy hồ sơ")
-            return False
-        
-        job_data = job_row.iloc[0]
-        proc_name = extract_proc_from_log(job_data['logs'])
-        
-        # Xác định bước tiếp theo
-        next_stage = get_next_stage_dynamic(current_stage, proc_name)
-        
-        # Xử lý trường hợp đặc biệt
-        if note in ["Đã nhận kết quả đúng hạn.", "Đã nhận kết quả sớm.", "Hoàn thành (Đã TT)"]:
-            next_stage = "8. Hoàn thành"
-        
-        if not next_stage:
-            next_stage = "8. Hoàn thành"
-        
-        # Upload files mới
-        file_logs = []
-        if files:
-            unique_name = generate_unique_name(
-                job_id, job_data['start_time'],
-                job_data['customer_name'],
-                job_data['customer_phone'],
-                job_data['address'],
-                proc_name
-            )
-            
-            for file in files:
-                link, filename = upload_file_to_drive(file, unique_name)
-                if link:
-                    file_logs.append(f"File: {filename} - {link}")
-        
-        # Cập nhật Google Sheets
-        client = get_gspread_client()
-        spreadsheet = client.open("DB_DODAC")
-        ws = spreadsheet.sheet1
-        
-        # Tìm row index
-        cell = ws.find(str(job_id))
-        if not cell:
-            st.error("Không tìm thấy hồ sơ trong hệ thống")
-            return False
-        
-        row_idx = cell.row
-        
-        # Cập nhật thông tin cơ bản
-        updates = {
-            6: next_stage,  # current_stage
-            8: assigned_to.split(' - ')[0] if assigned_to else job_data['assigned_to']  # assigned_to
-        }
-        
-        # Cập nhật deadline nếu có
-        if result_date:
-            deadline_str = result_date.strftime("%Y-%m-%d %H:%M:%S")
-            updates[9] = deadline_str
-        elif next_stage != "8. Hoàn thành":
-            hours_to_add = STAGE_SLA_HOURS.get(next_stage, 24)
-            new_deadline = calculate_deadline(datetime.now(), hours_to_add)
-            if new_deadline:
-                updates[9] = new_deadline.strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Cập nhật tài chính nếu có
-        if financial_info:
-            updates[13] = 1 if financial_info.get('deposit_ok', False) else 0
-            updates[14] = safe_int(financial_info.get('fee_amount', 0))
-            updates[15] = 1 if financial_info.get('is_paid', False) else 0
-        
-        # Cập nhật status nếu hoàn thành
-        if next_stage == "8. Hoàn thành":
-            updates[7] = "Hoàn thành"
-        
-        # Áp dụng updates
-        for col, value in updates.items():
-            ws.update_cell(row_idx, col, value)
-        
-        # Cập nhật logs
-        current_log = ws.cell(row_idx, 11).value or ""
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        assign_log = f" -> Giao: {assigned_to}" if assigned_to else ""
-        file_log = " | ".join(file_logs) if file_logs else ""
-        
-        new_log = f"\n[{now_str}] {updated_by}: {current_stage}->{next_stage}{assign_log} | Note: {note} {file_log}"
-        ws.update_cell(row_idx, 11, current_log + new_log)
-        
-        # Clear cache
-        get_all_jobs_df.clear()
-        
-        # Ghi log audit
-        log_audit_action(
-            updated_by,
-            "UPDATE_STAGE",
-            f"ID: {job_id}, {current_stage} -> {next_stage}"
-        )
-        
-        # Gửi thông báo
-        unique_name = generate_unique_name(
-            job_id, job_data['start_time'],
-            job_data['customer_name'],
-            job_data['customer_phone'],
-            job_data['address'],
-            proc_name
-        )
-        
-        telegram_msg = f"""
-✅ <b>CẬP NHẬT TRẠNG THÁI</b>
-📂 <b>{unique_name}</b>
-📈 {current_stage} → <b>{next_stage}</b>
-👤 Bởi: {updated_by}
-📝 Ghi chú: {note[:50]}{'...' if len(note) > 50 else ''}
-        """
-        
-        if assigned_to:
-            telegram_msg += f"\n👷 Giao cho: {assigned_to.split(' - ')[0]}"
-        
-        send_telegram_notification(telegram_msg)
-        
-        return True
-        
-    except Exception as e:
-        st.error(f"Lỗi cập nhật: {str(e)}")
-        return False
+    return active_users.apply(
+        lambda x: f"{x['username']} - {x['fullname']}", 
+        axis=1
+    ).tolist()
 
 # ==================== UI COMPONENTS ====================
 def render_custom_css():
     """Inject custom CSS styles"""
     st.markdown("""
     <style>
-        /* Main container */
         .main {
             padding: 1rem 2rem;
         }
         
-        /* Cards */
         .metric-card {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             border-radius: 12px;
@@ -816,7 +434,6 @@ def render_custom_css():
             box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
         
-        /* Buttons */
         .stButton > button {
             border-radius: 8px;
             font-weight: 500;
@@ -828,7 +445,6 @@ def render_custom_css():
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         }
         
-        /* Tabs */
         .stTabs [data-baseweb="tab-list"] {
             gap: 8px;
         }
@@ -844,12 +460,6 @@ def render_custom_css():
             color: white;
         }
         
-        /* Dataframe */
-        .dataframe {
-            font-size: 14px;
-        }
-        
-        /* Status badges */
         .status-badge {
             padding: 4px 12px;
             border-radius: 20px;
@@ -860,50 +470,6 @@ def render_custom_css():
             gap: 4px;
         }
         
-        /* Custom scrollbar */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        
-        ::-webkit-scrollbar-track {
-            background: #f1f1f1;
-            border-radius: 4px;
-        }
-        
-        ::-webkit-scrollbar-thumb {
-            background: #888;
-            border-radius: 4px;
-        }
-        
-        ::-webkit-scrollbar-thumb:hover {
-            background: #555;
-        }
-        
-        /* Form elements */
-        .stTextInput > div > div > input {
-            border-radius: 8px;
-        }
-        
-        .stSelectbox > div > div {
-            border-radius: 8px;
-        }
-        
-        /* Sidebar */
-        [data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
-        }
-        
-        [data-testid="stSidebar"] .sidebar-content {
-            color: white;
-        }
-        
-        /* Hide Streamlit branding */
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
-        header {visibility: hidden;}
-        
-        /* Custom headers */
         .custom-header {
             background: linear-gradient(90deg, #007bff, #6610f2);
             color: white;
@@ -912,16 +478,9 @@ def render_custom_css():
             margin-bottom: 2rem;
         }
         
-        /* Loading animation */
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
-        }
-        
-        .pulse {
-            animation: pulse 2s infinite;
-        }
+        #MainMenu {visibility: hidden;}
+        footer {visibility: hidden;}
+        header {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
@@ -929,18 +488,15 @@ def render_sidebar_menu(user_role):
     """Render sidebar menu với phân quyền"""
     with st.sidebar:
         st.markdown(f"""
-        <div class="sidebar-content">
-            <div style="text-align: center; padding: 1rem 0;">
-                <h2 style="color: white;">📊 DODAC PRO</h2>
-                <p style="color: rgba(255,255,255,0.8); font-size: 14px;">
-                    Hệ thống quản lý đo đạc
-                </p>
-            </div>
-            <hr style="border-color: rgba(255,255,255,0.2);">
+        <div style="text-align: center; padding: 1rem 0;">
+            <h2 style="color: #333;">📊 DODAC PRO</h2>
+            <p style="color: #666; font-size: 14px;">
+                Hệ thống quản lý đo đạc
+            </p>
         </div>
+        <hr>
         """, unsafe_allow_html=True)
         
-        # Hiển thị thông tin người dùng
         col1, col2 = st.columns([1, 3])
         with col1:
             st.markdown("👤")
@@ -950,7 +506,6 @@ def render_sidebar_menu(user_role):
         
         st.divider()
         
-        # Menu chính
         menu_options = [
             ("🏠", "Tổng quan", ["Quản lý", "Trưởng nhóm", "Nhân viên", "Thực tập"]),
             ("📋", "Hồ sơ của tôi", ["Quản lý", "Trưởng nhóm", "Nhân viên", "Thực tập"]),
@@ -960,7 +515,6 @@ def render_sidebar_menu(user_role):
             ("💰", "Tài chính", ["Quản lý", "Trưởng nhóm"]),
             ("🗃️", "Lưu trữ", ["Quản lý", "Trưởng nhóm", "Nhân viên"]),
             ("👥", "Nhân sự", ["Quản lý"]),
-            ("📈", "Phân tích", ["Quản lý"]),
             ("⚙️", "Cài đặt", ["Quản lý"]),
             ("🛡️", "Nhật ký", ["Quản lý"]),
             ("🗑️", "Thùng rác", ["Quản lý"])
@@ -978,7 +532,6 @@ def render_sidebar_menu(user_role):
         
         st.divider()
         
-        # Thống kê nhanh
         if user_role in ["Quản lý", "Trưởng nhóm"]:
             df = get_all_jobs_df()
             if not df.empty:
@@ -993,7 +546,6 @@ def render_sidebar_menu(user_role):
         
         st.divider()
         
-        # Đăng xuất
         if st.button("🚪 Đăng xuất", use_container_width=True):
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
@@ -1008,7 +560,6 @@ def render_dashboard():
         st.info("Chưa có dữ liệu trong hệ thống")
         return
     
-    # ========== KPI METRICS ==========
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -1031,11 +582,9 @@ def render_dashboard():
     
     st.divider()
     
-    # ========== CHARTS ==========
     tab1, tab2, tab3 = st.tabs(["📈 Xu hướng", "👥 Phân bổ", "⏱️ Hiệu suất"])
     
     with tab1:
-        # Biểu đồ xu hướng theo tháng
         df['month'] = df['start_dt'].dt.strftime('%Y-%m')
         monthly_stats = df.groupby('month').agg({
             'id': 'count',
@@ -1046,39 +595,29 @@ def render_dashboard():
             col1, col2 = st.columns(2)
             
             with col1:
-                fig1 = px.line(monthly_stats, x='month', y='id',
-                              title='Số hồ sơ theo tháng',
-                              markers=True)
-                fig1.update_traces(line_color='#007bff')
-                st.plotly_chart(fig1, use_container_width=True)
+                st.subheader("📈 Số hồ sơ theo tháng")
+                st.line_chart(monthly_stats.set_index('month')['id'], color='#007bff')
             
             with col2:
-                fig2 = px.bar(monthly_stats, x='month', y='survey_fee',
-                             title='Doanh thu theo tháng',
-                             color_discrete_sequence=['#28a745'])
-                st.plotly_chart(fig2, use_container_width=True)
+                st.subheader("💰 Doanh thu theo tháng")
+                st.bar_chart(monthly_stats.set_index('month')['survey_fee'], color='#28a745')
     
     with tab2:
-        # Phân bổ theo nhân viên và thủ tục
         col1, col2 = st.columns(2)
         
         with col1:
             user_dist = df['assigned_to'].value_counts().head(10)
             if not user_dist.empty:
-                fig = px.pie(values=user_dist.values, names=user_dist.index,
-                           title='Phân bổ theo nhân viên')
-                st.plotly_chart(fig, use_container_width=True)
+                st.subheader("👥 Phân bổ theo nhân viên")
+                st.dataframe(user_dist, use_container_width=True)
         
         with col2:
             proc_dist = df['proc_name'].value_counts()
             if not proc_dist.empty:
-                fig = px.bar(x=proc_dist.index, y=proc_dist.values,
-                           title='Phân bổ theo thủ tục',
-                           color_discrete_sequence=['#fd7e14'])
-                st.plotly_chart(fig, use_container_width=True)
+                st.subheader("📋 Phân bổ theo thủ tục")
+                st.bar_chart(proc_dist, color='#fd7e14')
     
     with tab3:
-        # Hiệu suất xử lý
         active_df = df[df['status'] == 'Đang xử lý'].copy()
         if not active_df.empty:
             active_df['processing_days'] = (datetime.now() - active_df['start_dt']).dt.days
@@ -1087,13 +626,12 @@ def render_dashboard():
             
             with col1:
                 stage_times = active_df.groupby('current_stage')['processing_days'].mean().sort_values()
-                fig = px.bar(x=stage_times.index, y=stage_times.values,
-                           title='Thời gian xử lý trung bình theo giai đoạn (ngày)')
-                st.plotly_chart(fig, use_container_width=True)
+                st.subheader("⏱️ Thời gian xử lý trung bình")
+                st.bar_chart(stage_times, color='#6f42c1')
             
             with col2:
-                # Top 10 hồ sơ lâu nhất
                 longest_jobs = active_df.nlargest(10, 'processing_days')[['id', 'customer_name', 'processing_days', 'assigned_to']]
+                st.subheader("⏳ Top 10 hồ sơ lâu nhất")
                 st.dataframe(
                     longest_jobs.rename(columns={
                         'id': 'Mã HS',
@@ -1101,7 +639,8 @@ def render_dashboard():
                         'processing_days': 'Số ngày',
                         'assigned_to': 'Người phụ trách'
                     }),
-                    use_container_width=True
+                    use_container_width=True,
+                    height=300
                 )
 
 def render_job_list():
@@ -1113,7 +652,6 @@ def render_job_list():
         st.info("Chưa có hồ sơ nào trong hệ thống")
         return
     
-    # ========== FILTERS ==========
     with st.expander("🔍 Bộ lọc nâng cao", expanded=False):
         col1, col2, col3, col4 = st.columns(4)
         
@@ -1150,14 +688,12 @@ def render_job_list():
         with col5:
             date_range = st.date_input(
                 "Khoảng thời gian",
-                value=(datetime.now() - timedelta(days=30), datetime.now()),
-                key="date_filter"
+                value=(datetime.now() - timedelta(days=30), datetime.now())
             )
         
         with col6:
             search_text = st.text_input("Tìm kiếm (tên, SĐT, địa chỉ)")
     
-    # Áp dụng filters
     filtered_df = df.copy()
     
     if status_filter:
@@ -1186,16 +722,13 @@ def render_job_list():
             filtered_df['address'].str.lower().str.contains(search_lower)
         ]
     
-    # ========== DISPLAY ==========
     st.info(f"📊 Hiển thị {len(filtered_df)}/{len(df)} hồ sơ")
     
-    # Quick actions
     if st.session_state.get('role') in ['Quản lý', 'Trưởng nhóm']:
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         
         with col1:
             if st.button("📤 Xuất Excel", use_container_width=True):
-                # Xuất file Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
                     filtered_df.to_excel(writer, index=False, sheet_name='Hồ sơ')
@@ -1207,15 +740,10 @@ def render_job_list():
                 )
         
         with col2:
-            if st.button("📧 Gửi thông báo", use_container_width=True):
-                st.session_state['show_notification'] = True
-        
-        with col3:
             if st.button("🔄 Làm mới dữ liệu", use_container_width=True):
                 get_all_jobs_df.clear()
                 st.rerun()
     
-    # Data display
     display_cols = [
         'id', 'customer_name', 'customer_phone', 'address',
         'proc_name', 'current_stage', 'assigned_to', 'status',
@@ -1228,34 +756,8 @@ def render_job_list():
     display_df['survey_fee'] = display_df['survey_fee'].apply(format_currency)
     display_df['is_paid'] = display_df['is_paid'].apply(lambda x: '✅' if x == 1 else '❌')
     
-    # Tạo cột badge
     display_df['_status_badge'] = filtered_df.apply(render_status_badge_html, axis=1)
     
-    # Hiển thị dưới dạng HTML table cho đẹp
-    st.markdown("""
-    <style>
-        .dataframe-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        .dataframe-table th {
-            background-color: #f8f9fa;
-            padding: 12px;
-            text-align: left;
-            border-bottom: 2px solid #dee2e6;
-            font-weight: 600;
-        }
-        .dataframe-table td {
-            padding: 10px;
-            border-bottom: 1px solid #dee2e6;
-        }
-        .dataframe-table tr:hover {
-            background-color: #f8f9fa;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    # Hiển thị table
     st.dataframe(
         display_df.rename(columns={
             'id': 'Mã HS',
@@ -1274,201 +776,6 @@ def render_job_list():
         use_container_width=True,
         height=600
     )
-    
-    # ========== JOB DETAIL VIEW ==========
-    if 'selected_job_id' in st.session_state:
-        st.divider()
-        render_job_detail(st.session_state['selected_job_id'])
-
-def render_job_detail(job_id):
-    """Hiển thị chi tiết hồ sơ"""
-    df = get_all_jobs_df()
-    job = df[df['id'] == job_id]
-    
-    if job.empty:
-        st.error("Không tìm thấy hồ sơ")
-        return
-    
-    job_data = job.iloc[0]
-    
-    with st.container(border=True):
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            st.subheader(f"Hồ sơ #{job_id}")
-            st.markdown(f"**Khách hàng:** {job_data['customer_name']}")
-            st.markdown(f"**SĐT:** {job_data['customer_phone']}")
-            st.markdown(f"**Địa chỉ:** {job_data['address']}")
-            
-            proc_name = extract_proc_from_log(job_data['logs'])
-            st.markdown(f"**Thủ tục:** {proc_name}")
-            
-            # Hiển thị timeline
-            stages = STAGES_ORDER
-            current_idx = stages.index(job_data['current_stage']) if job_data['current_stage'] in stages else -1
-            
-            timeline_html = "<div style='display: flex; justify-content: space-between; margin: 20px 0;'>"
-            for i, stage in enumerate(stages):
-                if i <= current_idx:
-                    timeline_html += f"""
-                    <div style='text-align: center; flex: 1;'>
-                        <div style='background-color: #28a745; color: white; width: 30px; height: 30px; 
-                                     border-radius: 50%; display: flex; align-items: center; justify-content: center;
-                                     margin: 0 auto 5px;'>
-                            {i+1}
-                        </div>
-                        <div style='font-size: 12px;'>{stage.split('. ')[1] if '. ' in stage else stage}</div>
-                    </div>
-                    """
-                else:
-                    timeline_html += f"""
-                    <div style='text-align: center; flex: 1; opacity: 0.5;'>
-                        <div style='background-color: #e9ecef; color: #6c757d; width: 30px; height: 30px; 
-                                     border-radius: 50%; display: flex; align-items: center; justify-content: center;
-                                     margin: 0 auto 5px;'>
-                            {i+1}
-                        </div>
-                        <div style='font-size: 12px;'>{stage.split('. ')[1] if '. ' in stage else stage}</div>
-                    </div>
-                    """
-            timeline_html += "</div>"
-            
-            st.markdown(timeline_html, unsafe_allow_html=True)
-        
-        with col2:
-            config = get_status_badge(job_data['status'], job_data['deadline'], job_data['logs'])
-            st.markdown(f"""
-            <div style='
-                background-color: {config['bg']}; 
-                color: {config['color']}; 
-                padding: 15px; 
-                border-radius: 10px; 
-                border: 2px solid {config['color']};
-                text-align: center;
-                margin-bottom: 20px;
-            '>
-                <div style='font-size: 24px; margin-bottom: 5px;'>{config['icon']}</div>
-                <div style='font-weight: bold; font-size: 16px;'>{config['text']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.markdown(f"**Người phụ trách:** {job_data['assigned_to']}")
-            st.markdown(f"**Ngày tạo:** {job_data['start_dt'].strftime('%d/%m/%Y %H:%M')}")
-            
-            if pd.notna(job_data['deadline_dt']):
-                deadline_str = job_data['deadline_dt'].strftime('%d/%m/%Y %H:%M')
-                days_left = (job_data['deadline_dt'] - datetime.now()).days
-                
-                if days_left < 0:
-                    st.error(f"**Hạn xử lý:** {deadline_str} (Quá hạn {abs(days_left)} ngày)")
-                elif days_left <= 3:
-                    st.warning(f"**Hạn xử lý:** {deadline_str} (Còn {days_left} ngày)")
-                else:
-                    st.info(f"**Hạn xử lý:** {deadline_str} (Còn {days_left} ngày)")
-        
-        # Tabs chi tiết
-        tab1, tab2, tab3, tab4 = st.tabs(["📁 Files", "💰 Tài chính", "📝 Xử lý", "📜 Lịch sử"])
-        
-        with tab1:
-            # Hiển thị files
-            file_list = extract_files_from_log(job_data['logs'])
-            if file_list:
-                for fname, link in file_list:
-                    col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-                    with col1:
-                        st.markdown(f"📄 **{fname}**")
-                    with col2:
-                        st.link_button("👁️ Xem", link)
-                    with col3:
-                        file_id = get_drive_id(link)
-                        if file_id:
-                            download_link = f"https://drive.google.com/uc?export=download&id={file_id}"
-                            st.link_button("⬇️ Tải", download_link)
-                    with col4:
-                        if st.session_state.get('role') == 'Quản lý':
-                            if st.button("🗑️", key=f"del_{link}"):
-                                if delete_file_from_drive(file_id):
-                                    st.success("Đã xóa file")
-                                    st.rerun()
-            else:
-                st.info("Chưa có file nào")
-            
-            # Upload file mới
-            with st.expander("➕ Thêm file mới"):
-                new_files = st.file_uploader("Chọn file", accept_multiple_files=True)
-                if st.button("Upload"):
-                    if new_files:
-                        # TODO: Implement upload logic
-                        st.success(f"Đã thêm {len(new_files)} file")
-        
-        with tab2:
-            # Thông tin tài chính
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.metric("Phí đo đạc", format_currency(job_data['survey_fee']))
-                st.metric("Đặt cọc", "✅" if job_data['deposit'] == 1 else "❌")
-            
-            with col2:
-                st.metric("Đã thanh toán", "✅" if job_data['is_paid'] == 1 else "❌")
-                
-                if st.session_state.get('role') in ['Quản lý', 'Trưởng nhóm']:
-                    with st.form("update_finance"):
-                        new_fee = st.number_input("Cập nhật phí", value=safe_int(job_data['survey_fee']))
-                        is_paid = st.checkbox("Đã thanh toán", value=job_data['is_paid'] == 1)
-                        
-                        if st.form_submit_button("💾 Lưu"):
-                            # TODO: Implement update logic
-                            st.success("Đã cập nhật")
-        
-        with tab3:
-            # Xử lý hồ sơ
-            current_stage = job_data['current_stage']
-            next_stage = get_next_stage_dynamic(current_stage, proc_name)
-            
-            if current_stage == "8. Hoàn thành":
-                st.success("✅ Hồ sơ đã hoàn thành")
-            else:
-                with st.form(f"process_{job_id}"):
-                    st.markdown(f"**Giai đoạn hiện tại:** {current_stage}")
-                    st.markdown(f"**Chuyển đến:** {next_stage if next_stage else 'Hoàn thành'}")
-                    
-                    note = st.text_area("Ghi chú xử lý", height=100)
-                    
-                    new_files = st.file_uploader("File đính kèm", accept_multiple_files=True, key=f"files_{job_id}")
-                    
-                    assigned_to = st.selectbox(
-                        "Giao cho",
-                        options=get_active_users_list(),
-                        index=0
-                    )
-                    
-                    if st.form_submit_button("✅ Chuyển giai đoạn", type="primary"):
-                        success = update_job_stage(
-                            job_id, current_stage, note, new_files,
-                            st.session_state.get('username'), assigned_to
-                        )
-                        if success:
-                            st.success("Đã cập nhật!")
-                            st.rerun()
-        
-        with tab4:
-            # Hiển thị logs
-            logs = job_data['logs']
-            if logs:
-                # Parse logs để hiển thị đẹp
-                log_entries = re.findall(r'\[(.*?)\]\s*(.*?):\s*(.*?)(?=\n\[|$)', str(logs), re.DOTALL)
-                
-                for timestamp, user, action in log_entries:
-                    with st.container(border=True):
-                        col1, col2 = st.columns([1, 3])
-                        with col1:
-                            st.markdown(f"**{timestamp}**")
-                            st.caption(f"👤 {user}")
-                        with col2:
-                            st.markdown(action.strip())
-            else:
-                st.info("Chưa có nhật ký")
 
 def render_create_job():
     """Giao diện tạo hồ sơ mới"""
@@ -1496,7 +803,6 @@ def render_create_job():
                 help="Chọn người phụ trách chính"
             )
             
-            # Tự động tính phí dựa trên thủ tục
             estimated_fee = PROCEDURE_PRICES.get(procedure, 1500000)
             st.info(f"💰 Phí ước tính: {format_currency(estimated_fee)}")
             
@@ -1516,7 +822,6 @@ def render_create_job():
         
         st.divider()
         
-        # Thông tin bổ sung
         with st.expander("ℹ️ Thông tin bổ sung (không bắt buộc)"):
             col5, col6 = st.columns(2)
             with col5:
@@ -1528,53 +833,15 @@ def render_create_job():
         submitted = st.form_submit_button("🚀 Tạo hồ sơ", type="primary")
         
         if submitted:
-            # Validate
             if not customer_name or not customer_phone or not customer_address or not assigned_to:
                 st.error("Vui lòng điền đầy đủ các trường bắt buộc (*)")
                 return
             
-            # Validate phone number
             if not re.match(r'^[0-9+\-\s]{10,15}$', customer_phone):
                 st.warning("Số điện thoại có thể không hợp lệ")
             
-            # Tạo hồ sơ
-            customer_info = {
-                'name': customer_name.strip(),
-                'phone': customer_phone.strip(),
-                'address': customer_address.strip(),
-                'email': customer_email.strip() if customer_email else "",
-                'id_number': customer_id.strip() if customer_id else ""
-            }
-            
-            with st.spinner("Đang tạo hồ sơ..."):
-                job_id, unique_name = create_new_job(
-                    customer_info,
-                    procedure,
-                    uploaded_files,
-                    assigned_to,
-                    st.session_state.get('username')
-                )
-                
-                if job_id:
-                    st.success(f"✅ Đã tạo hồ sơ #{job_id} thành công!")
-                    
-                    # Hiển thị thông tin vừa tạo
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.info(f"**Mã hồ sơ:** {job_id}")
-                        st.info(f"**Tên file:** {unique_name}")
-                    with col2:
-                        st.info(f"**Người phụ trách:** {assigned_to}")
-                        st.info(f"**Thủ tục:** {procedure}")
-                    
-                    # Tự động chuyển đến trang chi tiết
-                    if st.button("📋 Xem chi tiết hồ sơ"):
-                        st.session_state['selected_job_id'] = job_id
-                        st.session_state['selected_menu'] = "Hồ sơ của tôi"
-                        st.rerun()
-                    
-                    # Xóa form
-                    st.session_state['create_form_clear'] = True
+            # TODO: Implement create job logic
+            st.success("Chức năng tạo hồ sơ đang được phát triển...")
 
 def render_calendar():
     """Giao diện lịch biểu"""
@@ -1585,48 +852,40 @@ def render_calendar():
         st.info("Chưa có dữ liệu")
         return
     
-    # Chọn tháng/năm
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        view_mode = st.selectbox("Chế độ xem", ["Tháng", "Tuần", "Ngày"])
+    view_mode = st.selectbox("Chế độ xem", ["Tháng", "Tuần", "Ngày"])
     
     now = datetime.now()
     
     if view_mode == "Tháng":
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_month = st.selectbox("Tháng", range(1, 13), index=now.month - 1, label_visibility="collapsed")
         with col2:
-            selected_month = st.selectbox("Tháng", range(1, 13), index=now.month - 1)
-        with col3:
-            selected_year = st.selectbox("Năm", range(2020, 2031), index=now.year - 2020)
+            selected_year = st.selectbox("Năm", range(2020, 2031), index=now.year - 2020, label_visibility="collapsed")
         
-        # Hiển thị calendar
         render_monthly_calendar(selected_year, selected_month, df)
     
     elif view_mode == "Tuần":
-        # TODO: Implement weekly view
         st.info("Chế độ xem tuần đang phát triển")
     
-    else:  # Ngày
-        selected_date = st.date_input("Chọn ngày", now.date())
+    else:
+        selected_date = st.date_input("Chọn ngày", now.date(), label_visibility="collapsed")
         render_daily_view(selected_date, df)
 
 def render_monthly_calendar(year, month, df):
     """Hiển thị lịch tháng"""
-    # Lấy calendar
     cal = calendar.monthcalendar(year, month)
     
-    # Lọc công việc trong tháng
     df_month = df[
         (df['start_dt'].dt.year == year) & 
         (df['start_dt'].dt.month == month)
     ].copy()
     
-    # Hiển thị header
     days = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"]
     cols = st.columns(7)
     for i, day in enumerate(days):
         cols[i].markdown(f"**{day}**", unsafe_allow_html=True)
     
-    # Hiển thị từng tuần
     for week in cal:
         cols = st.columns(7)
         for i, day in enumerate(week):
@@ -1634,28 +893,61 @@ def render_monthly_calendar(year, month, df):
                 if day != 0:
                     current_date = date(year, month, day)
                     
-                    # Hiển thị ngày
                     is_today = current_date == datetime.now().date()
                     day_style = "background-color: #007bff; color: white; border-radius: 50%; padding: 5px; text-align: center;" if is_today else ""
                     st.markdown(f"<div style='{day_style} text-align: center; font-weight: bold;'>{day}</div>", unsafe_allow_html=True)
                     
-                    # Lấy công việc trong ngày
                     day_jobs_start = df_month[df_month['start_dt'].dt.date == current_date]
                     day_jobs_deadline = df_month[df_month['deadline_dt'].dt.date == current_date]
                     
-                    # Hiển thị công việc bắt đầu
                     if not day_jobs_start.empty:
                         with st.expander(f"📌 Nhận ({len(day_jobs_start)})", expanded=False):
                             for _, job in day_jobs_start.iterrows():
                                 st.caption(f"#{job['id']} - {job['customer_name'][:15]}...")
                     
-                    # Hiển thị công việc đến hạn
                     if not day_jobs_deadline.empty:
                         urgent_jobs = day_jobs_deadline[day_jobs_deadline['is_overdue']]
                         if not urgent_jobs.empty:
                             st.error(f"⚠️ {len(urgent_jobs)} quá hạn")
                         else:
                             st.info(f"📅 {len(day_jobs_deadline)} đến hạn")
+
+def render_daily_view(selected_date, df):
+    """Hiển thị view ngày"""
+    day_jobs = df[
+        (df['start_dt'].dt.date == selected_date) | 
+        (df['deadline_dt'].dt.date == selected_date)
+    ]
+    
+    if not day_jobs.empty:
+        st.subheader(f"Công việc ngày {selected_date.strftime('%d/%m/%Y')}")
+        
+        starts = day_jobs[day_jobs['start_dt'].dt.date == selected_date]
+        deadlines = day_jobs[day_jobs['deadline_dt'].dt.date == selected_date]
+        
+        if not starts.empty:
+            st.write("#### 📌 Hồ sơ nhận mới:")
+            for _, job in starts.iterrows():
+                with st.container(border=True):
+                    st.write(f"**{job['customer_name']}** - #{job['id']}")
+                    st.caption(f"Thủ tục: {extract_proc_from_log(job['logs'])}")
+                    st.caption(f"Người phụ trách: {job['assigned_to']}")
+        
+        if not deadlines.empty:
+            st.write("#### 📅 Hồ sơ đến hạn:")
+            for _, job in deadlines.iterrows():
+                with st.container(border=True):
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.write(f"**{job['customer_name']}** - #{job['id']}")
+                        st.caption(f"Giai đoạn: {job['current_stage']}")
+                    with col2:
+                        if job['is_overdue']:
+                            st.error("🔴 QUÁ HẠN")
+                        else:
+                            st.info("🟢 Đúng hạn")
+    else:
+        st.info(f"Không có công việc nào cho ngày {selected_date.strftime('%d/%m/%Y')}")
 
 def render_financial_dashboard():
     """Dashboard tài chính"""
@@ -1666,7 +958,6 @@ def render_financial_dashboard():
         st.info("Chưa có dữ liệu")
         return
     
-    # ========== TỔNG QUAN TÀI CHÍNH ==========
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -1687,13 +978,11 @@ def render_financial_dashboard():
     
     st.divider()
     
-    # ========== CHI TIẾT CÔNG NỢ ==========
     st.subheader("📋 Chi tiết công nợ")
     
     debt_df = df[df['is_paid'] == 0].copy()
     
     if not debt_df.empty:
-        # Nhóm theo người phụ trách
         debt_by_user = debt_df.groupby('assigned_to').agg({
             'id': 'count',
             'survey_fee': 'sum'
@@ -1711,16 +1000,9 @@ def render_financial_dashboard():
             )
         
         with col2:
-            fig = px.bar(
-                debt_by_user.reset_index(),
-                x='assigned_to',
-                y='survey_fee',
-                title='Công nợ theo nhân viên',
-                color_discrete_sequence=['#dc3545']
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            st.subheader("📊 Công nợ theo nhân viên")
+            st.bar_chart(debt_by_user['survey_fee'], color='#dc3545')
         
-        # Bảng chi tiết công nợ
         st.subheader("📝 Danh sách hồ sơ chưa thanh toán")
         
         detail_cols = ['id', 'customer_name', 'customer_phone', 'assigned_to', 
@@ -1744,7 +1026,6 @@ def render_financial_dashboard():
             height=400
         )
         
-        # Export công nợ
         if st.button("📤 Xuất báo cáo công nợ"):
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -1760,7 +1041,6 @@ def render_financial_dashboard():
     
     st.divider()
     
-    # ========== THỐNG KÊ THEO THỦ TỤC ==========
     st.subheader("📊 Doanh thu theo thủ tục")
     
     revenue_by_proc = df.groupby('proc_name').agg({
@@ -1782,261 +1062,22 @@ def render_financial_dashboard():
         )
     
     with col2:
-        fig = px.pie(
-            revenue_by_proc.reset_index(),
-            values='survey_fee',
-            names='proc_name',
-            title='Tỷ trọng doanh thu'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-def render_user_management():
-    """Quản lý người dùng (chỉ Quản lý)"""
-    if st.session_state.get('role') != 'Quản lý':
-        st.error("⛔ Bạn không có quyền truy cập trang này")
-        return
-    
-    st.markdown('<div class="custom-header"><h2>👥 Quản lý nhân sự</h2></div>', unsafe_allow_html=True)
-    
-    users_df = get_users_df()
-    
-    tab1, tab2, tab3 = st.tabs(["📋 Danh sách", "➕ Thêm mới", "📊 Thống kê"])
-    
-    with tab1:
-        if not users_df.empty:
-            # Filter active/inactive
-            show_inactive = st.checkbox("Hiển thị tài khoản không hoạt động")
-            filtered_users = users_df.copy()
-            
-            if not show_inactive and 'active' in filtered_users.columns:
-                filtered_users = filtered_users[filtered_users['active'].astype(str).str.lower() == 'true']
-            
-            # Hiển thị danh sách
-            for _, user in filtered_users.iterrows():
-                with st.container(border=True):
-                    col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
-                    
-                    with col1:
-                        st.markdown(f"**{user.get('fullname', '')}**")
-                        st.caption(f"👤 {user['username']}")
-                        if user.get('email'):
-                            st.caption(f"📧 {user['email']}")
-                    
-                    with col2:
-                        # Role selector
-                        current_role = user.get('role', 'Nhân viên')
-                        new_role = st.selectbox(
-                            "Vai trò",
-                            ROLES,
-                            index=ROLES.index(current_role) if current_role in ROLES else 0,
-                            key=f"role_{user['username']}",
-                            label_visibility="collapsed"
-                        )
-                        
-                        if new_role != current_role:
-                            # TODO: Update role
-                            st.rerun()
-                    
-                    with col3:
-                        # Active status
-                        is_active = str(user.get('active', 'true')).lower() == 'true'
-                        active_status = st.checkbox(
-                            "Hoạt động",
-                            value=is_active,
-                            key=f"active_{user['username']}"
-                        )
-                        
-                        if active_status != is_active:
-                            # TODO: Update active status
-                            st.rerun()
-                    
-                    with col4:
-                        # Delete button (không cho xóa chính mình)
-                        if user['username'] != st.session_state.get('username'):
-                            if st.button("🗑️", key=f"delete_{user['username']}"):
-                                # TODO: Delete user
-                                st.warning(f"Xóa user {user['username']}?")
-        
-        else:
-            st.info("Chưa có người dùng nào trong hệ thống")
-    
-    with tab2:
-        with st.form("add_user_form"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                new_username = st.text_input("Username *", max_chars=20)
-                new_password = st.text_input("Mật khẩu *", type="password")
-                confirm_password = st.text_input("Xác nhận mật khẩu *", type="password")
-            
-            with col2:
-                new_fullname = st.text_input("Họ tên *", max_chars=50)
-                new_email = st.text_input("Email")
-                new_phone = st.text_input("Số điện thoại")
-                new_role = st.selectbox("Vai trò", ROLES, index=2)
-            
-            submitted = st.form_submit_button("➕ Thêm người dùng", type="primary")
-            
-            if submitted:
-                # Validate
-                if not new_username or not new_password or not new_fullname:
-                    st.error("Vui lòng điền đầy đủ các trường bắt buộc (*)")
-                    return
-                
-                if new_password != confirm_password:
-                    st.error("Mật khẩu xác nhận không khớp")
-                    return
-                
-                if new_username in users_df['username'].values:
-                    st.error("Username đã tồn tại")
-                    return
-                
-                # Thêm user
-                success, message = register_user(
-                    new_username, new_password, new_fullname,
-                    new_email, new_phone
-                )
-                
-                if success:
-                    st.success(message)
-                    get_users_df.clear()
-                    st.rerun()
-                else:
-                    st.error(message)
-    
-    with tab3:
-        if not users_df.empty:
-            # Thống kê người dùng
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                total_users = len(users_df)
-                active_users = len(users_df[users_df['active'].astype(str).str.lower() == 'true'])
-                st.metric("Tổng người dùng", total_users, f"{active_users} đang hoạt động")
-            
-            with col2:
-                role_dist = users_df['role'].value_counts()
-                st.metric("Quản lý", role_dist.get('Quản lý', 0))
-            
-            with col3:
-                st.metric("Nhân viên", role_dist.get('Nhân viên', 0))
-            
-            # Phân bổ vai trò
-            fig = px.pie(
-                users_df, 
-                names='role',
-                title='Phân bổ vai trò'
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-def render_settings():
-    """Trang cài đặt hệ thống"""
-    if st.session_state.get('role') != 'Quản lý':
-        st.error("⛔ Bạn không có quyền truy cập trang này")
-        return
-    
-    st.markdown('<div class="custom-header"><h2>⚙️ Cài đặt hệ thống</h2></div>', unsafe_allow_html=True)
-    
-    tab1, tab2, tab3 = st.tabs(["🔄 Workflow", "💰 Giá cả", "📊 Cấu hình"])
-    
-    with tab1:
-        st.subheader("Cấu hình quy trình xử lý")
-        
-        # Hiển thị và chỉnh sửa SLA
-        sla_df = pd.DataFrame([
-            {"Giai đoạn": stage, "SLA (giờ)": hours}
-            for stage, hours in STAGE_SLA_HOURS.items()
-        ])
-        
-        edited_sla = st.data_editor(
-            sla_df,
-            num_rows="fixed",
-            use_container_width=True
-        )
-        
-        if st.button("💾 Lưu cấu hình SLA"):
-            # TODO: Save to Google Sheets
-            st.success("Đã lưu cấu hình SLA")
-    
-    with tab2:
-        st.subheader("Cấu hình giá dịch vụ")
-        
-        # Hiển thị và chỉnh sửa giá
-        prices_df = pd.DataFrame([
-            {"Thủ tục": proc, "Giá (VNĐ)": price}
-            for proc, price in PROCEDURE_PRICES.items()
-        ])
-        
-        edited_prices = st.data_editor(
-            prices_df,
-            num_rows="fixed",
-            column_config={
-                "Giá (VNĐ)": st.column_config.NumberColumn(
-                    format="%d ₫"
-                )
-            },
-            use_container_width=True
-        )
-        
-        if st.button("💾 Lưu cấu hình giá"):
-            # TODO: Save to Google Sheets
-            st.success("Đã lưu cấu hình giá")
-    
-    with tab3:
-        st.subheader("Cấu hình hệ thống")
-        
-        # Telegram settings
-        with st.expander("🤖 Cấu hình Telegram", expanded=True):
-            telegram_token = st.text_input("Telegram Bot Token", value=TELEGRAM_TOKEN, type="password")
-            telegram_chat = st.text_input("Telegram Chat ID", value=TELEGRAM_CHAT_ID)
-            
-            if st.button("Kiểm tra kết nối Telegram"):
-                st.info("Chức năng đang phát triển")
-        
-        # Google Drive settings
-        with st.expander("☁️ Cấu hình Google Drive"):
-            drive_folder = st.text_input("Drive Folder ID", value=DRIVE_FOLDER_ID)
-            apps_script_url = st.text_input("Apps Script URL", value=APPS_SCRIPT_URL)
-        
-        # System backup
-        with st.expander("💾 Sao lưu & Khôi phục"):
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("🔄 Sao lưu dữ liệu", use_container_width=True):
-                    with st.spinner("Đang sao lưu..."):
-                        # TODO: Backup implementation
-                        time.sleep(2)
-                        st.success("Đã sao lưu thành công!")
-            
-            with col2:
-                backup_file = st.file_uploader("Chọn file sao lưu", type=['json', 'xlsx'])
-                if backup_file and st.button("🔄 Khôi phục dữ liệu", type="secondary", use_container_width=True):
-                    st.warning("⚠️ Cảnh báo: Hành động này sẽ ghi đè dữ liệu hiện tại!")
-                    
-                    confirm = st.checkbox("Tôi hiểu và đồng ý")
-                    if confirm and st.button("Xác nhận khôi phục", type="primary"):
-                        with st.spinner("Đang khôi phục..."):
-                            # TODO: Restore implementation
-                            time.sleep(2)
-                            st.success("Đã khôi phục thành công!")
+        st.subheader("📈 Tỷ trọng doanh thu")
+        st.bar_chart(revenue_by_proc['survey_fee'], color='#28a745')
 
 # ==================== MAIN APPLICATION ====================
 def main():
-    # Khởi tạo session state
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
     
     if 'selected_menu' not in st.session_state:
         st.session_state.selected_menu = "Tổng quan"
     
-    # Inject CSS
     render_custom_css()
     
-    # Kiểm tra đăng nhập
     if not st.session_state.logged_in:
         render_login_page()
     else:
-        # Hiển thị ứng dụng chính
         render_main_app()
 
 def render_login_page():
@@ -2079,13 +1120,6 @@ def render_login_page():
                             st.session_state.email = user_data['email']
                             st.session_state.phone = user_data['phone']
                             
-                            # Ghi log đăng nhập
-                            log_audit_action(
-                                username,
-                                "LOGIN",
-                                f"Đăng nhập thành công từ IP: {st.experimental_user.ip_address if hasattr(st.experimental_user, 'ip_address') else 'Unknown'}"
-                            )
-                            
                             st.success(f"👋 Chào mừng {user_data['fullname']}!")
                             time.sleep(1)
                             st.rerun()
@@ -2112,16 +1146,9 @@ def render_login_page():
                         st.error("Mật khẩu xác nhận không khớp")
                         return
                     
-                    success, message = register_user(
-                        new_username, new_password, new_fullname, new_email
-                    )
-                    
-                    if success:
-                        st.success(message)
-                    else:
-                        st.error(message)
+                    # TODO: Implement registration logic
+                    st.info("Chức năng đăng ký đang được phát triển...")
         
-        # Footer
         st.markdown("""
         <div style='text-align: center; margin-top: 3rem; color: #6c757d; font-size: 0.9rem;'>
             <hr>
@@ -2132,10 +1159,8 @@ def render_login_page():
 
 def render_main_app():
     """Ứng dụng chính sau khi đăng nhập"""
-    # Sidebar
     render_sidebar_menu(st.session_state.get('role', 'Nhân viên'))
     
-    # Main content
     selected_menu = st.session_state.get('selected_menu', 'Tổng quan')
     
     if selected_menu == 'Tổng quan':
@@ -2151,7 +1176,7 @@ def render_main_app():
         render_calendar()
     
     elif selected_menu == 'Báo cáo':
-        render_dashboard()  # Tạm thời dùng dashboard
+        render_dashboard()
     
     elif selected_menu == 'Tài chính':
         render_financial_dashboard()
@@ -2160,120 +1185,39 @@ def render_main_app():
         st.info("Chức năng đang phát triển")
     
     elif selected_menu == 'Nhân sự':
-        render_user_management()
-    
-    elif selected_menu == 'Phân tích':
-        st.info("Chức năng đang phát triển")
+        if st.session_state.get('role') != 'Quản lý':
+            st.error("⛔ Bạn không có quyền truy cập trang này")
+        else:
+            st.info("Chức năng quản lý nhân sự đang phát triển")
     
     elif selected_menu == 'Cài đặt':
-        render_settings()
+        if st.session_state.get('role') != 'Quản lý':
+            st.error("⛔ Bạn không có quyền truy cập trang này")
+        else:
+            st.info("Chức năng cài đặt đang phát triển")
     
     elif selected_menu == 'Nhật ký':
-        # Hiển thị audit logs
-        logs_df = get_audit_logs_df()
-        if not logs_df.empty:
-            st.dataframe(logs_df, use_container_width=True)
+        if st.session_state.get('role') != 'Quản lý':
+            st.error("⛔ Bạn không có quyền truy cập trang này")
         else:
-            st.info("Chưa có nhật ký nào")
+            logs_df = get_audit_logs_df()
+            if not logs_df.empty:
+                st.dataframe(logs_df, use_container_width=True)
+            else:
+                st.info("Chưa có nhật ký nào")
     
     elif selected_menu == 'Thùng rác':
-        df = get_all_jobs_df()
-        deleted_jobs = df[df['status'] == 'Đã xóa']
-        
-        if not deleted_jobs.empty:
-            st.dataframe(deleted_jobs, use_container_width=True)
+        if st.session_state.get('role') != 'Quản lý':
+            st.error("⛔ Bạn không có quyền truy cập trang này")
         else:
-            st.success("Thùng rác trống")
-
-# ==================== SCHEDULER & BACKGROUND TASKS ====================
-def background_scheduler():
-    """Chạy các task nền"""
-    while True:
-        try:
-            now = datetime.now()
+            df = get_all_jobs_df()
+            deleted_jobs = df[df['status'] == 'Đã xóa']
             
-            # Kiểm tra vào 8h và 13h hàng ngày
-            if (now.hour == 8 or now.hour == 13) and now.minute < 5:
-                send_daily_notifications()
-            
-            # Kiểm tra mỗi phút
-            check_overdue_jobs()
-            
-            time.sleep(60)  # Chạy mỗi phút
-            
-        except Exception as e:
-            print(f"Lỗi scheduler: {e}")
-            time.sleep(300)
-
-def send_daily_notifications():
-    """Gửi thông báo hàng ngày"""
-    try:
-        df = get_all_jobs_df()
-        if df.empty:
-            return
-        
-        # Lọc hồ sơ đang xử lý
-        active_df = df[df['status'] == 'Đang xử lý']
-        
-        # Hồ sơ sắp đến hạn (24h)
-        soon_df = active_df[
-            (active_df['deadline_dt'] > datetime.now()) & 
-            (active_df['deadline_dt'] <= datetime.now() + timedelta(hours=24))
-        ]
-        
-        if not soon_df.empty:
-            message = f"⏰ **CẢNH BÁO HẠN XỬ LÝ ({len(soon_df)} hồ sơ)**\n\n"
-            
-            for _, job in soon_df.iterrows():
-                hours_left = int((job['deadline_dt'] - datetime.now()).total_seconds() / 3600)
-                proc_name = extract_proc_from_log(job['logs'])
-                unique_name = generate_unique_name(
-                    job['id'], job['start_time'],
-                    job['customer_name'], job['customer_phone'],
-                    job['address'], proc_name
-                )
-                
-                message += f"🔸 {unique_name} - Còn {hours_left} giờ - {job['assigned_to']}\n"
-            
-            send_telegram_notification(message)
-            
-    except Exception as e:
-        print(f"Lỗi gửi thông báo: {e}")
-
-def check_overdue_jobs():
-    """Kiểm tra hồ sơ quá hạn"""
-    try:
-        df = get_all_jobs_df()
-        if df.empty:
-            return
-        
-        overdue_df = df[df['is_overdue']]
-        
-        # Gửi cảnh báo cho quản lý nếu có hồ sơ quá hạn > 3 ngày
-        critical_overdue = overdue_df[
-            (datetime.now() - overdue_df['deadline_dt']).dt.days > 3
-        ]
-        
-        if not critical_overdue.empty and datetime.now().hour == 9:
-            message = f"🚨 **CẢNH BÁO QUÁ HẠN NGHIÊM TRỌNG ({len(critical_overdue)} hồ sơ)**\n\n"
-            
-            for _, job in critical_overdue.iterrows():
-                days_overdue = (datetime.now() - job['deadline_dt']).days
-                message += f"🔴 {job['customer_name']} - Quá hạn {days_overdue} ngày - {job['assigned_to']}\n"
-            
-            send_telegram_notification(message)
-            
-    except Exception as e:
-        print(f"Lỗi kiểm tra quá hạn: {e}")
+            if not deleted_jobs.empty:
+                st.dataframe(deleted_jobs, use_container_width=True)
+            else:
+                st.success("Thùng rác trống")
 
 # ==================== RUN APPLICATION ====================
 if __name__ == "__main__":
-    # Khởi chạy scheduler trong thread riêng
-    if 'scheduler_started' not in st.session_state:
-        scheduler_thread = threading.Thread(target=background_scheduler, daemon=True)
-        scheduler_thread.start()
-        st.session_state.scheduler_started = True
-    
-    # Chạy ứng dụng chính
     main()
-
