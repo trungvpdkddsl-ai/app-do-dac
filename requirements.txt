@@ -1,5 +1,7 @@
 streamlit
 pandas
+XlsxWriter
 gspread
 google-auth
+altair
 requests
