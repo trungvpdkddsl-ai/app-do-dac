@@ -24,35 +24,59 @@ APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyEMEGyS_sVCA4eyVRFXx
 DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy"
 
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
-STAGES_ORDER = ["1. Tạo mới", "2. Đo đạc", "3. Hoàn thiện trích đo", "4. Làm hồ sơ", "5. Ký hồ sơ", "6. Lấy hồ sơ", "7. Nộp hồ sơ", "8. Hoàn thành"]
 
-# Danh sách thủ tục
+# [CẬP NHẬT] DANH SÁCH BƯỚC MỚI (Bỏ "Tạo mới", Đo đạc lên số 1)
+STAGES_ORDER = [
+    "1. Đo đạc", 
+    "2. Hoàn thiện trích đo", 
+    "3. Làm hồ sơ", 
+    "4. Ký hồ sơ", 
+    "5. Lấy hồ sơ", 
+    "6. Nộp hồ sơ", 
+    "7. Hoàn thành"
+]
+
 PROCEDURES_LIST = ["Cấp lần đầu", "Cấp đổi", "Chuyển quyền", "Tách thửa", "Thừa kế", "Cung cấp thông tin", "Đính chính", "Chỉ đo đạc"]
 
-# Quy trình chuẩn đầy đủ
+# [CẬP NHẬT] WORKFLOW MỚI (Đánh số lại)
 WORKFLOW_FULL = {
-    "1. Tạo mới": "2. Đo đạc", "2. Đo đạc": "3. Hoàn thiện trích đo", 
-    "3. Hoàn thiện trích đo": "4. Làm hồ sơ", "4. Làm hồ sơ": "5. Ký hồ sơ", 
-    "5. Ký hồ sơ": "6. Lấy hồ sơ", "6. Lấy hồ sơ": "7. Nộp hồ sơ", 
-    "7. Nộp hồ sơ": "8. Hoàn thành", "8. Hoàn thành": None
+    "1. Đo đạc": "2. Hoàn thiện trích đo", 
+    "2. Hoàn thiện trích đo": "3. Làm hồ sơ",
+    "3. Làm hồ sơ": "4. Ký hồ sơ", 
+    "4. Ký hồ sơ": "5. Lấy hồ sơ", 
+    "5. Lấy hồ sơ": "6. Nộp hồ sơ", 
+    "6. Nộp hồ sơ": "7. Hoàn thành", 
+    "7. Hoàn thành": None
 }
 
-# Quy trình rút gọn
+# Quy trình rút gọn (Bỏ đo đạc nếu cần, hoặc bắt đầu từ Đo đạc rồi nhảy)
+# Với hồ sơ không cần đo, ta có thể cho đi từ 1->3 luôn hoặc bắt đầu từ 3.
+# Ở đây giả định vẫn đi qua bước 1 để log, sau đó nhảy cóc.
 WORKFLOW_SHORT = {
-    "1. Tạo mới": "4. Làm hồ sơ", "4. Làm hồ sơ": "5. Ký hồ sơ", 
-    "5. Ký hồ sơ": "6. Lấy hồ sơ", "6. Lấy hồ sơ": "7. Nộp hồ sơ", 
-    "7. Nộp hồ sơ": "8. Hoàn thành", "8. Hoàn thành": None
+    "1. Đo đạc": "3. Làm hồ sơ", 
+    "3. Làm hồ sơ": "4. Ký hồ sơ", 
+    "4. Ký hồ sơ": "5. Lấy hồ sơ", 
+    "5. Lấy hồ sơ": "6. Nộp hồ sơ", 
+    "6. Nộp hồ sơ": "7. Hoàn thành", 
+    "7. Hoàn thành": None
 }
 
-# Quy trình "Chỉ đo đạc"
+# Quy trình "Chỉ đo đạc" (1 -> 2 -> 7 Hoàn thành)
 WORKFLOW_ONLY_SURVEY = {
-    "1. Tạo mới": "2. Đo đạc",
-    "2. Đo đạc": "3. Hoàn thiện trích đo",
-    "3. Hoàn thiện trích đo": "8. Hoàn thành",
-    "8. Hoàn thành": None
+    "1. Đo đạc": "2. Hoàn thiện trích đo",
+    "2. Hoàn thiện trích đo": "7. Hoàn thành", 
+    "7. Hoàn thành": None
 }
 
-STAGE_SLA_HOURS = {"1. Tạo mới": 0, "2. Đo đạc": 24, "3. Hoàn thiện trích đo": 24, "4. Làm hồ sơ": 24, "5. Ký hồ sơ": 72, "6. Lấy hồ sơ": 24, "7. Nộp hồ sơ": 360}
+# SLA cập nhật theo tên bước mới
+STAGE_SLA_HOURS = {
+    "1. Đo đạc": 24, 
+    "2. Hoàn thiện trích đo": 24, 
+    "3. Làm hồ sơ": 24, 
+    "4. Ký hồ sơ": 72, 
+    "5. Lấy hồ sơ": 24, 
+    "6. Nộp hồ sơ": 360
+}
 
 # --- 2. HÀM HỖ TRỢ & KẾT NỐI ---
 def safe_int(value):
@@ -74,7 +98,10 @@ def extract_proc_from_log(log_text):
 
 def get_next_stage_dynamic(current_stage, proc_name):
     if proc_name == "Chỉ đo đạc": return WORKFLOW_ONLY_SURVEY.get(current_stage)
-    if proc_name in ["Cung cấp thông tin", "Đính chính"]: return WORKFLOW_SHORT.get(current_stage)
+    if proc_name in ["Cung cấp thông tin", "Đính chính"]: 
+        # Nếu đang ở bước 1 mà là hồ sơ rút gọn thì nhảy sang 3
+        if current_stage == "1. Đo đạc": return "3. Làm hồ sơ"
+        return WORKFLOW_SHORT.get(current_stage)
     return WORKFLOW_FULL.get(current_stage)
 
 def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
@@ -343,14 +370,18 @@ def add_job(n, p, a, proc, f, u, asn):
             l, n_f = upload_file_via_script(uploaded_file, full_name_str)
             if l: log_file_str += f" | File: {n_f} - {l}"; link = l; fname = n_f
 
-    dl_dt = now + timedelta(days=365) 
+    # Tính hạn xử lý cho bước đầu tiên (Đo đạc)
+    hours_to_add = STAGE_SLA_HOURS.get("1. Đo đạc", 24)
+    dl_dt = calculate_deadline(now, hours_to_add)
     dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
-    log = f"[{now_str}] {u}: Khởi tạo ({proc}){assign_info}{log_file_str}"
+    
+    # [CẬP NHẬT] Khởi tạo hồ sơ: Trạng thái bắt đầu là "1. Đo đạc"
+    log = f"[{now_str}] {u}: Khởi tạo ({proc}) -> 1. Đo đạc{assign_info}{log_file_str}"
     asn_clean = asn.split(" - ")[0] if asn else ""
     
-    sh.append_row([jid, now_str, n, phone_db, a, "1. Tạo mới", "Đang xử lý", asn_clean, dl, link, log, 0, 0, 0, 0])
+    sh.append_row([jid, now_str, n, phone_db, a, "1. Đo đạc", "Đang xử lý", asn_clean, dl, link, log, 0, 0, 0, 0])
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
     
     type_msg = f"({proc.upper()})"
@@ -372,10 +403,10 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
                 if l: log_file_str += f" | File: {n_f} - {l}"
         
         if nt == "Đã nhận kết quả đúng hạn." or nt == "Đã nhận kết quả sớm." or nt == "Hoàn thành (Đã TT)":
-            nxt = "8. Hoàn thành"
+            nxt = "7. Hoàn thành"
         else:
             nxt = get_next_stage_dynamic(stg, proc_name)
-            if not nxt: nxt = "8. Hoàn thành"
+            if not nxt: nxt = "7. Hoàn thành"
 
         if nxt:
             sh.update_cell(r, 6, nxt)
@@ -387,7 +418,7 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
                 new_deadline = result_date.strftime("%Y-%m-%d %H:%M:%S")
                 sh.update_cell(r, 9, new_deadline); nt += f" (Hẹn trả: {result_date.strftime('%d/%m/%Y')})"
             else:
-                if nxt == "8. Hoàn thành": pass
+                if nxt == "7. Hoàn thành": pass
                 else:
                     hours_to_add = STAGE_SLA_HOURS.get(nxt, 24)
                     if hours_to_add > 0:
@@ -400,7 +431,7 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
             olog = sh.cell(r, 11).value
             nlog = f"\n[{now}] {u}: {stg}->{nxt}{assign_str} | Note: {nt}{log_file_str}"
             sh.update_cell(r, 11, olog + nlog)
-            if nxt=="8. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
+            if nxt=="7. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
             log_to_audit(u, "UPDATE_STAGE", f"ID: {jid}, {stg} -> {nxt}")
             send_telegram_msg(f"✅ <b>CẬP NHẬT</b>\n📂 <b>{full_code}</b>\n{stg} ➡ <b>{nxt}</b>\n👤 {u}{assign_tele}")
 
@@ -427,7 +458,8 @@ def return_to_previous_stage(jid, current_stage, reason, u):
             while temp_idx >= 0:
                 candidate = STAGES_ORDER[temp_idx]
                 if proc_name in ["Cung cấp thông tin", "Đính chính"]:
-                      if candidate in ["2. Đo đạc", "3. Hoàn thiện trích đo"]:
+                      # Nếu là thủ tục rút gọn, bỏ qua đo đạc/trích đo nếu lùi từ làm hồ sơ
+                      if candidate in ["1. Đo đạc", "2. Hoàn thiện trích đo"]:
                           temp_idx -= 1; continue
                 prev_stage = candidate; break
 
@@ -580,7 +612,7 @@ def render_job_card_content(j, user, role, user_list):
             st.error(f"TRẠNG THÁI: {j['status'].upper()}")
             if j['status'] == 'Tạm dừng' and st.button("▶️ Tiếp tục", key=f"r{j['id']}"): resume_job(j['id'], user); st.rerun()
         
-        elif j['current_stage'] == "7. Nộp hồ sơ":
+        elif j['current_stage'] == "6. Nộp hồ sơ":
             st.info("🏢 **ĐANG CHỜ KẾT QUẢ TỪ CƠ QUAN CHỨC NĂNG**")
             c_d, c_b = st.columns([2,1])
             new_date = c_d.date_input("Hẹn trả:", value=dl_dt.date(), key=f"d7_{j['id']}", label_visibility="collapsed")
@@ -593,7 +625,7 @@ def render_job_card_content(j, user, role, user_list):
             
             if c_pay_yes.button("✅ Đã TT - Kết thúc", type="primary", use_container_width=True, key=f"fin_pay_{j['id']}"):
                  update_finance_only(j['id'], 1, safe_int(j.get('survey_fee')), 1, user)
-                 update_stage(j['id'], "7. Nộp hồ sơ", "Hoàn thành (Đã TT)", [], user, "", 0, safe_int(j.get('is_survey_only')), 1, safe_int(j.get('survey_fee')), 1)
+                 update_stage(j['id'], "6. Nộp hồ sơ", "Hoàn thành (Đã TT)", [], user, "", 0, safe_int(j.get('is_survey_only')), 1, safe_int(j.get('survey_fee')), 1)
                  st.rerun()
 
             if c_pay_no.button("⛔ Chưa TT - Treo HS", use_container_width=True, key=f"fin_notpay_{j['id']}"):
@@ -614,12 +646,12 @@ def render_job_card_content(j, user, role, user_list):
                 fl = st.file_uploader("Thêm file:", accept_multiple_files=True, key=f"up_{j['id']}_{st.session_state['uploader_key']}")
                 
                 cur = j['current_stage']; nxt = get_next_stage_dynamic(cur, proc_name)
-                if not nxt: nxt = "8. Hoàn thành"
+                if not nxt: nxt = "7. Hoàn thành"
                 
                 c_next, c_assign = st.columns([1, 1])
                 with c_next: st.write(f"➡️ **{nxt}**")
                 with c_assign:
-                    if nxt != "8. Hoàn thành":
+                    if nxt != "7. Hoàn thành":
                         idx = 0
                         if user_list and j['assigned_to'] in user_list: idx = user_list.index(j['assigned_to'])
                         asn = st.selectbox("Giao việc:", user_list, index=idx, label_visibility="collapsed")
@@ -855,17 +887,18 @@ else:
 
             # Bộ lọc chi tiết
             with st.container(border=True):
-                c_fil1, c_fil2, c_fil3 = st.columns([2, 1, 1])
-                # [CẬP NHẬT TÌM KIẾM] Thêm "thủ tục" vào placeholder
+                # [MODIFIED] Thêm filter thủ tục và bỏ "1. Tạo mới" khỏi bước
+                c_fil1, c_fil2, c_fil3, c_fil4 = st.columns([2, 1.5, 1.5, 1])
                 with c_fil1: search_kw = st.text_input("🔍 Tìm kiếm nhanh", placeholder="Nhập tên, SĐT, mã, thủ tục...")
-                with c_fil2: filter_stage = st.selectbox("📌 Lọc theo bước", ["Tất cả"] + STAGES_ORDER)
-                with c_fil3:
+                with c_fil2: filter_stage = st.selectbox("📌 Bước hiện tại", ["Tất cả"] + STAGES_ORDER) # "1. Đo đạc" giờ là đầu tiên
+                with c_fil3: filter_proc = st.selectbox("📂 Loại thủ tục", ["Tất cả"] + PROCEDURES_LIST)
+                with c_fil4:
                     cur_filt = st.session_state.get('job_filter', 'all')
-                    map_filt = {'overdue': 'ĐANG LỌC: QUÁ HẠN', 'urgent': 'ĐANG LỌC: SẮP ĐẾN HẠN', 'paused': 'ĐANG LỌC: TẠM DỪNG', 'all': 'ĐANG HIỂN THỊ: TẤT CẢ'}
-                    st.info(map_filt.get(cur_filt))
+                    map_filt = {'overdue': '🔴 QUÁ HẠN', 'urgent': '🟡 SẮP ĐẾN', 'paused': '⛔ TẠM DỪNG', 'all': '🟢 TẤT CẢ'}
+                    st.info(f"Lọc: {map_filt.get(cur_filt)}")
 
             display_df = my_df.copy()
-            # Logic lọc
+            # Logic lọc KPI
             if st.session_state['job_filter'] == 'overdue': 
                 display_df = display_df[(display_df['dl_dt'] < now) & (display_df['status'] != 'Tạm dừng')]
             elif st.session_state['job_filter'] == 'urgent': 
@@ -873,14 +906,20 @@ else:
             elif st.session_state['job_filter'] == 'paused': 
                 display_df = display_df[display_df['status'] == 'Tạm dừng']
 
+            # Lọc từ khóa
             if search_kw:
                 s = search_kw.lower()
-                # [CẬP NHẬT TÌM KIẾM] Thêm extract_proc_from_log vào chuỗi tìm kiếm
                 display_df['search_str'] = display_df.apply(lambda x: f"{x['id']} {x['customer_name']} {x['customer_phone']} {x['address']} {extract_proc_from_log(x['logs'])}".lower(), axis=1)
                 display_df = display_df[display_df['search_str'].str.contains(s, na=False)]
 
+            # Lọc bước
             if filter_stage != "Tất cả":
                 display_df = display_df[display_df['current_stage'] == filter_stage]
+
+            # [NEW] Lọc thủ tục
+            if filter_proc != "Tất cả":
+                display_df['temp_proc'] = display_df['logs'].apply(extract_proc_from_log)
+                display_df = display_df[display_df['temp_proc'] == filter_proc]
 
             render_optimized_list_view(display_df, user, role, user_list)
 
