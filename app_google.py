@@ -150,7 +150,6 @@ def get_status_badge_html(row):
     text = "Đang thực hiện"
     
     if status == "Tạm dừng":
-        # Check nếu tạm dừng do chưa thanh toán ở bước cuối
         if "Hoàn thành - Chưa thanh toán" in logs:
             color = "#fd7e14"; bg_color = "#fff3cd"; text = "⚠️ Xong - Chưa TT"
         else:
@@ -162,10 +161,8 @@ def get_status_badge_html(row):
     elif status == "Kết thúc sớm":
         color = "#343a40"; bg_color = "#e2e6ea"; text = "⏹️ Kết thúc"
     else:
-        # Check quá hạn
         if pd.notna(deadline) and now > deadline:
             color = "#dc3545"; bg_color = "#ffe6e6"; text = "🔴 Quá hạn"
-        # Check sắp đến hạn (24h)
         elif pd.notna(deadline) and now <= deadline <= now + timedelta(hours=24):
             color = "#fd7e14"; bg_color = "#fff3cd"; text = "⚠️ Sắp đến hạn"
 
@@ -777,25 +774,98 @@ if 'user' in st.query_params and not st.session_state['logged_in']:
         st.session_state['role'] = df_u[df_u['username'] == saved_user]['role'].values[0] if saved_user in df_u['username'].values else "Nhân viên"
 
 if not st.session_state['logged_in']:
-    st.title("🔐 CỔNG ĐĂNG NHẬP")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Đăng Nhập")
-        u = st.text_input("User", key="login_u"); p = st.text_input("Pass", type='password', key="login_p")
-        remember = st.checkbox("Ghi nhớ đăng nhập")
-        if st.button("Đăng Nhập", type="primary"):
-            d = login_user(u, p)
-            if d: 
-                st.session_state['logged_in']=True; st.session_state['user']=d[0]; st.session_state['role']=d[3]
-                if remember: st.query_params["user"] = u
-                st.rerun()
-            else: st.error("Sai thông tin!")
+    # --- CSS CHO GIAO DIỆN LOGIN ĐẸP ---
+    st.markdown("""
+    <style>
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        .stApp {
+            background-image: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            background-attachment: fixed;
+        }
+        .login-container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            margin-top: 50px;
+        }
+        div.stButton > button {
+            width: 100%;
+            border-radius: 8px;
+            height: 45px;
+            font-weight: bold;
+            border: none;
+            transition: all 0.3s ease;
+        }
+        div.stButton > button[kind="primary"] {
+            background: linear-gradient(90deg, #4b6cb7 0%, #182848 100%);
+            color: white;
+        }
+        div.stButton > button[kind="secondary"] {
+            background-color: white;
+            color: #333;
+            border: 1px solid #ddd;
+        }
+        .login-title {
+            text-align: center;
+            font-size: 28px;
+            font-weight: 700;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .login-subtitle {
+            text-align: center;
+            font-size: 14px;
+            color: #7f8c8d;
+            margin-bottom: 20px;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # --- BỐ CỤC CHÍNH ---
+    c1, c2, c3 = st.columns([1, 1.5, 1])
+    
     with c2:
-        st.subheader("Đăng Ký Mới")
-        nu = st.text_input("User Mới", key="reg_u"); np = st.text_input("Pass Mới", type='password', key="reg_p"); nn = st.text_input("Họ Tên", key="reg_n")
-        if st.button("Đăng Ký"): 
-            if create_user(nu, np, nn): st.success("OK! Chờ duyệt.")
-            else: st.error("Lỗi hoặc tên trùng!")
+        with st.container():
+            st.markdown('<div class="login-title">☁️ ĐO ĐẠC CLOUD V3</div>', unsafe_allow_html=True)
+            st.markdown('<div class="login-subtitle">Hệ thống quản lý hồ sơ chuyên nghiệp</div>', unsafe_allow_html=True)
+            
+            tab_login, tab_signup = st.tabs(["🔐 Đăng Nhập", "📝 Đăng Ký"])
+            
+            with tab_login:
+                st.write("") 
+                with st.form("login_form"):
+                    u = st.text_input("Tên đăng nhập", placeholder="Nhập username...", key="login_u")
+                    p = st.text_input("Mật khẩu", type='password', placeholder="Nhập mật khẩu...", key="login_p")
+                    remember = st.checkbox("Ghi nhớ đăng nhập")
+                    
+                    st.write("")
+                    if st.form_submit_button("ĐĂNG NHẬP NGAY", type="primary"):
+                        d = login_user(u, p)
+                        if d: 
+                            st.session_state['logged_in']=True; st.session_state['user']=d[0]; st.session_state['role']=d[3]
+                            if remember: st.query_params["user"] = u
+                            st.rerun()
+                        else: 
+                            st.error("❌ Sai tên đăng nhập hoặc mật khẩu!")
+
+            with tab_signup:
+                st.write("")
+                with st.form("signup_form"):
+                    st.info("Tạo tài khoản mới cho nhân viên")
+                    nu = st.text_input("User Mới", placeholder="Viết liền không dấu (vd: user1)", key="reg_u")
+                    np = st.text_input("Pass Mới", type='password', key="reg_p")
+                    nn = st.text_input("Họ Tên Đầy Đủ", placeholder="Ví dụ: Nguyễn Văn A", key="reg_n")
+                    
+                    st.write("")
+                    if st.form_submit_button("ĐĂNG KÝ TÀI KHOẢN"): 
+                        if not nu or not np or not nn:
+                            st.warning("⚠️ Vui lòng điền đủ thông tin.")
+                        elif create_user(nu, np, nn): 
+                            st.success("✅ Đăng ký thành công! Vui lòng chờ Quản lý duyệt.")
+                        else: 
+                            st.error("❌ Lỗi: Tên đăng nhập đã tồn tại hoặc không hợp lệ!")
 else:
     user = st.session_state['user']; role = st.session_state['role']
     with st.sidebar:
