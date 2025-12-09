@@ -71,18 +71,6 @@ def get_next_stage_dynamic(current_stage, proc_name):
     if proc_name in ["Cung cấp thông tin", "Đính chính"]: return WORKFLOW_SHORT.get(current_stage)
     return WORKFLOW_FULL.get(current_stage)
 
-def check_bottleneck(deadline_str, current_stage):
-    if current_stage == "8. Hoàn thành" or not deadline_str: return False, 0, 0
-    try:
-        dl_dt = pd.to_datetime(deadline_str)
-        now = datetime.now()
-        if now > dl_dt: 
-            overdue_hours = int((now - dl_dt).total_seconds() / 3600)
-            limit = STAGE_SLA_HOURS.get(current_stage, 24)
-            return True, overdue_hours, limit
-    except: pass
-    return False, 0, 0
-
 def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
     try:
         jid_str = str(jid); seq = jid_str[-2:] 
@@ -102,29 +90,6 @@ def extract_files_from_log(log_text):
         return [("File cũ", l) for l in raw_links]
     return matches
 
-def format_precise_time(td):
-    total_seconds = int(td.total_seconds())
-    sign = "-" if total_seconds < 0 else ""
-    total_seconds = abs(total_seconds)
-    days = total_seconds // 86400
-    hours = (total_seconds % 86400) // 3600
-    minutes = (total_seconds % 3600) // 60
-    parts = []
-    if days > 0: parts.append(f"{days} ngày")
-    if hours > 0: parts.append(f"{hours} giờ")
-    parts.append(f"{minutes} phút")
-    return f"{sign}{' '.join(parts)}" if parts else "0 phút"
-
-def get_processing_duration(logs, current_stage):
-    if current_stage == "8. Hoàn thành" or not logs: return timedelta(0), None
-    try:
-        matches = re.findall(r'\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]', str(logs))
-        if matches:
-            last_dt = datetime.strptime(matches[-1], "%Y-%m-%d %H:%M:%S")
-            return datetime.now() - last_dt, last_dt
-    except: pass
-    return timedelta(0), None
-
 def calculate_deadline(start_date, hours_to_add):
     if hours_to_add == 0: return None
     current_date = start_date; added_hours = 0
@@ -137,17 +102,37 @@ def get_drive_id(link):
     try: match = re.search(r'/d/([a-zA-Z0-9_-]+)', link); return match.group(1) if match else None
     except: return None
 
-# --- HELPER UI & CSS (SỬA LOGIC HIỂN THỊ BADGE) ---
+# --- [NEW] HÀM TÍNH TIẾN ĐỘ ---
+def get_time_progress(start_str, deadline_str, status):
+    if status in ["Hoàn thành", "Đã xóa", "Kết thúc sớm"]: return 0.0, "gray"
+    if not start_str or not deadline_str: return 0.0, "blue"
+    
+    try:
+        start = pd.to_datetime(start_str)
+        deadline = pd.to_datetime(deadline_str)
+        now = datetime.now()
+        
+        total_duration = (deadline - start).total_seconds()
+        elapsed = (now - start).total_seconds()
+        
+        if total_duration <= 0: return 1.0, "red"
+        
+        percent = elapsed / total_duration
+        if percent >= 1.0: return 1.0, "red"
+        if percent >= 0.75: return percent, "orange"
+        return percent, "green"
+    except:
+        return 0.0, "blue"
+
+# --- HELPER UI & CSS ---
 def get_status_badge_html(row):
-    """Tạo badge trạng thái đẹp mắt"""
+    """Tạo badge trạng thái"""
     status = row['status']
     deadline = pd.to_datetime(row['deadline'], errors='coerce')
     now = datetime.now()
     logs = str(row.get('logs', ''))
 
-    color = "#28a745" # Green (Mặc định)
-    bg_color = "#e6fffa"
-    text = "Đang thực hiện"
+    color = "#28a745"; bg_color = "#e6fffa"; text = "Đang thực hiện"
     
     if status == "Tạm dừng":
         if "Hoàn thành - Chưa thanh toán" in logs:
@@ -172,12 +157,6 @@ def inject_custom_css():
     st.markdown("""
     <style>
         .row-header { font-weight: bold; color: #333; border-bottom: 2px solid #ddd; padding-bottom: 5px; margin-bottom: 10px; font-size: 13px; }
-        .job-row { padding: 8px 0; border-bottom: 1px solid #f0f0f0; align-items: center; }
-        .customer-name { color: #d63031; font-weight: bold; font-size: 14px; margin-bottom: 2px; }
-        .sub-text { font-size: 12px; color: #555; display: block; margin-top: 0px; }
-        .proc-name { color: #0984e3; font-weight: 600; font-size: 13px; }
-        .stage-tag { font-size: 11px; font-weight: bold; color: #2d3436; background: #dfe6e9; padding: 2px 6px; border-radius: 4px; }
-        .time-text { font-size: 11px; line-height: 1.3; color: #333; }
         .compact-btn button { padding: 0px 8px !important; min-height: 28px !important; height: 28px !important; font-size: 12px !important; margin-top: 0px !important; }
         div[data-testid="stExpanderDetails"] { padding-top: 10px !important; }
         hr { margin: 10px 0px !important; }
@@ -681,85 +660,70 @@ def render_job_card_content(j, user, role, user_list):
     with t4:
         st.text_area("", j['logs'], height=150, disabled=True, label_visibility="collapsed")
 
-# --- RENDER LIST VIEW ---
-def render_complex_list_view(df, user, role, user_list):
+# --- [NEW] RENDER LIST VIEW TỐI ƯU (CÓ PHÂN TRANG) ---
+def render_optimized_list_view(df, user, role, user_list):
     inject_custom_css()
+    
+    # 1. SẮP XẾP DỮ LIỆU
+    df['sort_dl'] = pd.to_datetime(df['deadline'], errors='coerce').fillna(datetime.now() + timedelta(days=3650))
+    df = df.sort_values(by=['status', 'sort_dl'], ascending=[True, True])
 
-    # Tỉ lệ cột: [Mã, Thủ tục, Chủ hồ sơ, Thời gian, Người làm, Trạng thái, Toggle]
-    cols_cfg = [1.5, 1.5, 2.5, 2.5, 1.5, 1.2, 0.5]
-    h1, h2, h3, h4, h5, h6, h7 = st.columns(cols_cfg)
-    h1.markdown("**Mã Hồ Sơ**")
-    h2.markdown("**Thủ tục**")
-    h3.markdown("**Chủ hồ sơ**")
-    h4.markdown("**Thời gian quy định**")
-    h5.markdown("**Người thực hiện**")
-    h6.markdown("**Trạng thái**")
-    h7.markdown("**🔍**")
+    # 2. PHÂN TRANG (PAGINATION)
+    items_per_page = 10
+    if 'page_num' not in st.session_state: st.session_state.page_num = 0
+    
+    total_pages = max(1, (len(df) - 1) // items_per_page + 1)
+    
+    c_pag1, c_pag2, c_pag3 = st.columns([1, 2, 1])
+    with c_pag1:
+        if st.button("⬅️ Trước", disabled=(st.session_state.page_num == 0), use_container_width=True):
+            st.session_state.page_num -= 1; st.rerun()
+    with c_pag2:
+        st.markdown(f"<div style='text-align:center; padding-top:10px'><b>Trang {st.session_state.page_num + 1} / {total_pages}</b> (Tổng: {len(df)} hồ sơ)</div>", unsafe_allow_html=True)
+    with c_pag3:
+        if st.button("Sau ➡️", disabled=(st.session_state.page_num >= total_pages - 1), use_container_width=True):
+            st.session_state.page_num += 1; st.rerun()
 
-    if df.empty:
-        st.info("Không có dữ liệu.")
+    start_idx = st.session_state.page_num * items_per_page
+    end_idx = min(start_idx + items_per_page, len(df))
+    page_df = df.iloc[start_idx:end_idx]
+
+    if page_df.empty:
+        st.info("Không có dữ liệu hiển thị.")
         return
 
-    for index, row in df.iterrows():
-        short_id = str(row['id'])
-        if len(short_id) > 6: display_id = f"{short_id[:-2]}-{short_id[-2:]}"
-        else: display_id = short_id
-
+    for index, row in page_df.iterrows():
+        short_id = str(row['id'])[-4:]
         proc_name = extract_proc_from_log(row['logs'])
-        if not proc_name: proc_name = "Đo đạc khác"
+        clean_phone = str(row['customer_phone']).replace("'", "")
+        prog_val, prog_color = get_time_progress(row['start_time'], row['deadline'], row['status'])
+        status_html = get_status_badge_html(row)
         
-        start_dt = pd.to_datetime(row['start_time'])
-        try: dl_dt = pd.to_datetime(row['deadline'])
-        except: dl_dt = None
-        
-        overdue_msg = ""
-        if dl_dt and datetime.now() > dl_dt:
-            diff = datetime.now() - dl_dt
-            d = diff.days; h = diff.seconds // 3600
-            overdue_msg = f"<span style='color:red; font-weight:bold'>Đã quá hạn {d} ngày {h} giờ</span><br>"
-        
-        assignee = row['assigned_to'].split(' - ')[0] if row['assigned_to'] else "Chưa giao"
-        current_step_name = row['current_stage'].split('. ')[1] if '. ' in row['current_stage'] else row['current_stage']
-
         with st.container(border=True):
-            c1, c2, c3, c4, c5, c6, c7 = st.columns(cols_cfg)
-            
-            with c1: 
-                if st.button(display_id, key=f"btn_code_{row['id']}"):
-                    st.session_state[f"exp_{row['id']}"] = not st.session_state.get(f"exp_{row['id']}", False)
-                    st.rerun()
-            
-            with c2: st.markdown(f"<div class='proc-name'>{proc_name}</div>", unsafe_allow_html=True)
-            
+            c1, c2, c3 = st.columns([0.5, 3, 1.2])
+            with c1:
+                st.markdown(f"<div style='font-size:16px; font-weight:900; color:#333'>#{short_id}</div>", unsafe_allow_html=True)
+                if row['status'] not in ['Hoàn thành', 'Đã xóa']:
+                    st.progress(prog_val, text=None)
+                    if prog_color == "red": st.caption("🔥 GẤP")
+                    elif prog_color == "orange": st.caption("⚠️ Chú ý")
+            with c2:
+                st.markdown(f"<span style='font-size:15px; font-weight:bold; color:#0d6efd'>{row['customer_name']}</span> <span style='color:#6c757d'>({clean_phone})</span>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size:13px'>📍 {row['address']} • 🔖 <b>{proc_name}</b></div>", unsafe_allow_html=True)
+                assignee = row['assigned_to'].split(' - ')[0] if row['assigned_to'] else "Chưa giao"
+                st.caption(f"👤 {assignee} | ⏩ {row['current_stage']}")
             with c3:
-                clean_phone = str(row['customer_phone']).replace("'", "")
-                if st.button(f"{row['customer_name']}\n({clean_phone})", key=f"btn_name_{row['id']}", help="Xem chi tiết"):
-                    st.session_state[f"exp_{row['id']}"] = not st.session_state.get(f"exp_{row['id']}", False)
-                    st.rerun()
-                st.caption(f"📍 {row['address']}")
-
-            with c4:
-                date_fmt = "%d/%m/%Y %H:%M"
-                dl_str = dl_dt.strftime(date_fmt) if dl_dt else "Không giới hạn"
-                start_str = start_dt.strftime(date_fmt)
-                st.markdown(f"""<div class='time-text'>{overdue_msg}• Nhận: {start_str}<br>• Hạn: <b>{dl_str}</b></div>""", unsafe_allow_html=True)
-            
-            with c5:
-                st.markdown(f"""<div>👤 <b>{assignee}</b></div><div class='stage-tag'>{current_step_name}</div>""", unsafe_allow_html=True)
-            
-            with c6: st.markdown(get_status_badge_html(row), unsafe_allow_html=True)
-            
-            with c7:
+                st.markdown(status_html, unsafe_allow_html=True)
+                st.write("") 
                 expand_key = f"exp_{row['id']}"
-                btn_label = "🔼" if st.session_state.get(expand_key, False) else "🔽"
-                if st.button(btn_label, key=f"btn_expand_{row['id']}", help="Xem chi tiết & Xử lý"):
-                    st.session_state[expand_key] = not st.session_state.get(expand_key, False)
-                    st.rerun()
+                btn_text = "Đóng" if st.session_state.get(expand_key, False) else "Chi tiết"
+                if st.button(btn_text, key=f"btn_{row['id']}", use_container_width=True):
+                     st.session_state[expand_key] = not st.session_state.get(expand_key, False)
+                     st.rerun()
 
             if st.session_state.get(f"exp_{row['id']}", False):
                 st.markdown("---")
                 render_job_card_content(row, user, role, user_list)
-
 # --- UI MAIN ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
@@ -886,86 +850,58 @@ else:
 
     sel = st.session_state['menu_selection']; user_list = get_active_users_list()
     
+    # --- PHẦN "VIỆC CỦA TÔI" ĐÃ ĐƯỢC TỐI ƯU ---
     if sel == "🏠 Việc Của Tôi":
-        st.title("📋 Tiến trình hồ sơ")
+        st.title("📋 Trung Tâm Điều Hành Hồ Sơ")
         
-        if df.empty: st.info("Trống!")
+        if df.empty: st.info("Hệ thống chưa có dữ liệu.")
         else:
             active_df = df[df['status'] != 'Đã xóa']
-            if role != "Quản lý": user_filtered_df = active_df[active_df['assigned_to'].astype(str) == user]
-            else: user_filtered_df = active_df
+            if role != "Quản lý": 
+                user_filtered_df = active_df[active_df['assigned_to'].astype(str).str.contains(user, na=False)]
+            else: 
+                user_filtered_df = active_df
             
             my_df = user_filtered_df[~user_filtered_df['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
             now = datetime.now()
-            my_df['dl_dt'] = pd.to_datetime(my_df['deadline'], errors='coerce')
-            my_df['dl_dt'] = my_df['dl_dt'].fillna(now + timedelta(days=365))
+            my_df['dl_dt'] = pd.to_datetime(my_df['deadline'], errors='coerce').fillna(now + timedelta(days=3650))
             
             count_overdue = len(my_df[(my_df['dl_dt'] < now) & (my_df['status'] != 'Tạm dừng')])
             count_soon = len(my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(hours=24)) & (my_df['status'] != 'Tạm dừng')])
-            count_paused = len(my_df[my_df['status'] == 'Tạm dừng'])
-            count_total = len(my_df)
+            count_wait = len(my_df)
 
-            if my_df.empty: 
-                st.info("Không có hồ sơ nào đang xử lý. (Kiểm tra mục 'Lưu Trữ' để xem hồ sơ đã xong)")
-            else:
-                k1, k2, k3, k4 = st.columns(4)
-                if k1.button(f"🔴 Quá Hạn ({count_overdue})", use_container_width=True): st.session_state['job_filter'] = 'overdue'
-                if k2.button(f"🟡 Sắp đến hạn ({count_soon})", use_container_width=True): st.session_state['job_filter'] = 'urgent'
-                if k3.button(f"⛔ Tạm dừng ({count_paused})", use_container_width=True): st.session_state['job_filter'] = 'paused'
-                if k4.button(f"🟢 Tổng ({count_total})", use_container_width=True): st.session_state['job_filter'] = 'all'
+            c_kpi1, c_kpi2, c_kpi3 = st.columns(3)
+            c_kpi1.metric("🔥 Cần xử lý gấp", count_overdue, delta="Quá hạn", delta_color="inverse")
+            c_kpi2.metric("⚠️ Sắp đến hạn (24h)", count_soon, delta="Cảnh báo", delta_color="inverse")
+            c_kpi3.metric("🟢 Tổng hồ sơ đang chạy", count_wait)
+            
+            st.divider()
 
-                st.write("")
-                with st.expander("🔎 Bộ lọc tìm kiếm & Thời gian", expanded=False):
-                    f_c1, f_c2, f_c3, f_c4, f_c5 = st.columns([2, 1.5, 1.5, 1, 1.5])
-                    with f_c1:
-                        search_kw = st.text_input("🔍 Từ khóa (Tên, SĐT, Mã, Đ/c)", placeholder="Nhập để tìm...", key="s_kw")
-                    with f_c2:
-                        filter_stages = ["Tất cả"] + STAGES_ORDER
-                        sel_stage = st.selectbox("📌 Quy trình", filter_stages, key="s_stage")
-                    with f_c3:
-                        filter_users = ["Tất cả"] + user_list
-                        sel_user = st.selectbox("👤 Người làm", filter_users, key="s_user")
-                    with f_c4:
-                        time_option = st.selectbox("📅 Thời gian", ["Tất cả", "Tháng này", "Khoảng ngày"], key="s_time_opt")
-                    with f_c5:
-                        d_range = None
-                        if time_option == "Khoảng ngày":
-                            d_range = st.date_input("Chọn ngày", [], key="s_date_rng")
-                        elif time_option == "Tháng này":
-                            st.info(f"Tháng {datetime.now().month}/{datetime.now().year}")
+            with st.container(border=True):
+                c_fil1, c_fil2, c_fil3 = st.columns([2, 1, 1])
+                with c_fil1:
+                    search_kw = st.text_input("🔍 Tìm kiếm nhanh", placeholder="Nhập tên khách, số điện thoại hoặc mã hồ sơ...")
+                with c_fil2:
+                    filter_stage = st.selectbox("📌 Lọc theo bước", ["Tất cả"] + STAGES_ORDER)
+                with c_fil3:
+                    quick_filter = st.radio("Trạng thái:", ["Tất cả", "🔥 Quá hạn", "⛔ Tạm dừng"], horizontal=True)
 
-                if st.session_state['job_filter'] == 'overdue': display_df = my_df[(my_df['dl_dt'] < now) & (my_df['status'] != 'Tạm dừng')]
-                elif st.session_state['job_filter'] == 'urgent': display_df = my_df[(my_df['dl_dt'] >= now) & (my_df['dl_dt'] <= now + timedelta(hours=24)) & (my_df['status'] != 'Tạm dừng')]
-                elif st.session_state['job_filter'] == 'paused': display_df = my_df[my_df['status'] == 'Tạm dừng']
-                else: display_df = my_df
+            display_df = my_df.copy()
+            if quick_filter == "🔥 Quá hạn":
+                display_df = display_df[(display_df['dl_dt'] < now) & (display_df['status'] != 'Tạm dừng')]
+            elif quick_filter == "⛔ Tạm dừng":
+                display_df = display_df[display_df['status'] == 'Tạm dừng']
 
-                if search_kw:
-                    search_kw = search_kw.lower()
-                    display_df['search_str'] = display_df.apply(lambda x: f"{x['id']} {x['customer_name']} {x['customer_phone']} {x['address']} {extract_proc_from_log(x['logs'])}".lower(), axis=1)
-                    display_df = display_df[display_df['search_str'].str.contains(search_kw, na=False)]
+            if search_kw:
+                s = search_kw.lower()
+                display_df['search_str'] = display_df.apply(lambda x: f"{x['id']} {x['customer_name']} {x['customer_phone']} {x['address']}".lower(), axis=1)
+                display_df = display_df[display_df['search_str'].str.contains(s, na=False)]
 
-                if sel_stage != "Tất cả": display_df = display_df[display_df['current_stage'] == sel_stage]
-                if sel_user != "Tất cả":
-                    u_filter = sel_user.split(' - ')[0]
-                    display_df = display_df[display_df['assigned_to'].astype(str).str.contains(u_filter, na=False)]
-                if 'start_dt' in display_df.columns:
-                    if time_option == "Tháng này":
-                        start_month = date.today().replace(day=1)
-                        display_df = display_df[display_df['start_dt'] >= start_month]
-                    elif time_option == "Khoảng ngày" and d_range and len(d_range) == 2:
-                        display_df = display_df[(display_df['start_dt'] >= d_range[0]) & (display_df['start_dt'] <= d_range[1])]
+            if filter_stage != "Tất cả":
+                display_df = display_df[display_df['current_stage'] == filter_stage]
 
-                st.divider()
-                
-                filter_map = {'overdue': '🔴 QUÁ HẠN', 'urgent': '🟡 SẮP ĐẾN HẠN (<24h)', 'paused': '⛔ TẠM DỪNG', 'all': '🟢 TẤT CẢ'}
-                cur_filter = st.session_state.get('job_filter', 'all')
-                st.caption(f"Đang hiển thị: **{filter_map.get(cur_filter, 'Tất cả')}** ({len(display_df)} hồ sơ)")
-                
-                if display_df.empty:
-                    st.warning("Không tìm thấy hồ sơ nào phù hợp bộ lọc.")
-                else:
-                    display_df = display_df.sort_values(by=['status', 'id'], ascending=[True, False])
-                    render_complex_list_view(display_df, user, role, user_list)
+            st.caption(f"Tìm thấy: **{len(display_df)}** hồ sơ")
+            render_optimized_list_view(display_df, user, role, user_list)
 
     elif sel == "🗄️ Lưu Trữ":
         st.title("🗄️ Kho Lưu Trữ Hồ Sơ")
@@ -1065,7 +1001,6 @@ else:
                                             st.session_state['selected_cal_id'] = e['id']
                             st.divider()
             
-            # HIỂN THỊ CHI TIẾT DƯỚI LỊCH KHI BẤM
             if 'selected_cal_id' in st.session_state:
                 st.markdown("---")
                 st.subheader("🔎 Chi tiết hồ sơ từ Lịch")
@@ -1150,7 +1085,7 @@ else:
                     staff_metrics.append({"Nhân viên": u.split(' - ')[0], "Đang làm": len(doing), "Đã xong": len(done)})
                 st.dataframe(pd.DataFrame(staff_metrics), use_container_width=True, hide_index=True)
 
-    # --- PHẦN NHÂN SỰ ĐƯỢC TỐI ƯU HÓA ---
+    # --- PHẦN "NHÂN SỰ" ĐÃ ĐƯỢC TỐI ƯU ---
     elif sel == "👥 Nhân Sự":
         if role == "Quản lý":
             st.title("👥 Quản Lý & Phân Quyền")
@@ -1212,7 +1147,7 @@ else:
             st.title("🗑️ Thùng Rác"); trash_df = df[df['status'] == 'Đã xóa']
             if trash_df.empty: st.success("Thùng rác trống!")
             else:
-                render_complex_list_view(trash_df, user, role, user_list)
+                render_optimized_list_view(trash_df, user, role, user_list)
         else: st.error("Cấm truy cập!")
 
     elif sel == "🛡️ Nhật Ký":
