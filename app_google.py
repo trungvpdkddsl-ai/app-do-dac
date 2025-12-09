@@ -25,19 +25,33 @@ DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy"
 
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
 STAGES_ORDER = ["1. Tạo mới", "2. Đo đạc", "3. Hoàn thiện trích đo", "4. Làm hồ sơ", "5. Ký hồ sơ", "6. Lấy hồ sơ", "7. Nộp hồ sơ", "8. Hoàn thành"]
-PROCEDURES_LIST = ["Cấp lần đầu", "Cấp đổi", "Chuyển quyền", "Tách thửa", "Thừa kế", "Cung cấp thông tin", "Đính chính"]
 
+# Danh sách thủ tục
+PROCEDURES_LIST = ["Cấp lần đầu", "Cấp đổi", "Chuyển quyền", "Tách thửa", "Thừa kế", "Cung cấp thông tin", "Đính chính", "Chỉ đo đạc"]
+
+# Quy trình chuẩn đầy đủ
 WORKFLOW_FULL = {
     "1. Tạo mới": "2. Đo đạc", "2. Đo đạc": "3. Hoàn thiện trích đo", 
     "3. Hoàn thiện trích đo": "4. Làm hồ sơ", "4. Làm hồ sơ": "5. Ký hồ sơ", 
     "5. Ký hồ sơ": "6. Lấy hồ sơ", "6. Lấy hồ sơ": "7. Nộp hồ sơ", 
     "7. Nộp hồ sơ": "8. Hoàn thành", "8. Hoàn thành": None
 }
+
+# Quy trình rút gọn
 WORKFLOW_SHORT = {
     "1. Tạo mới": "4. Làm hồ sơ", "4. Làm hồ sơ": "5. Ký hồ sơ", 
     "5. Ký hồ sơ": "6. Lấy hồ sơ", "6. Lấy hồ sơ": "7. Nộp hồ sơ", 
     "7. Nộp hồ sơ": "8. Hoàn thành", "8. Hoàn thành": None
 }
+
+# Quy trình "Chỉ đo đạc"
+WORKFLOW_ONLY_SURVEY = {
+    "1. Tạo mới": "2. Đo đạc",
+    "2. Đo đạc": "3. Hoàn thiện trích đo",
+    "3. Hoàn thiện trích đo": "8. Hoàn thành",
+    "8. Hoàn thành": None
+}
+
 STAGE_SLA_HOURS = {"1. Tạo mới": 0, "2. Đo đạc": 24, "3. Hoàn thiện trích đo": 24, "4. Làm hồ sơ": 24, "5. Ký hồ sơ": 72, "6. Lấy hồ sơ": 24, "7. Nộp hồ sơ": 360}
 
 # --- 2. HÀM HỖ TRỢ & KẾT NỐI ---
@@ -49,7 +63,8 @@ def get_proc_abbr(proc_name):
     mapping = {
         "Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ", 
         "Tách thửa": "TT", "Thừa kế": "TK", 
-        "Cung cấp thông tin": "CCTT", "Đính chính": "DC"
+        "Cung cấp thông tin": "CCTT", "Đính chính": "DC",
+        "Chỉ đo đạc": "CDD"
     }
     return mapping.get(proc_name, "K")
 
@@ -58,6 +73,7 @@ def extract_proc_from_log(log_text):
     return match.group(1) if match else "Khác"
 
 def get_next_stage_dynamic(current_stage, proc_name):
+    if proc_name == "Chỉ đo đạc": return WORKFLOW_ONLY_SURVEY.get(current_stage)
     if proc_name in ["Cung cấp thông tin", "Đính chính"]: return WORKFLOW_SHORT.get(current_stage)
     return WORKFLOW_FULL.get(current_stage)
 
@@ -95,7 +111,7 @@ def get_drive_id(link):
 # --- HÀM TÍNH TIẾN ĐỘ & HTML BAR ---
 def get_progress_bar_html(start_str, deadline_str, status):
     if status in ["Hoàn thành", "Đã xóa", "Kết thúc sớm"]: 
-        return "" # Không hiện thanh tiến độ nếu đã xong
+        return ""
     if not start_str or not deadline_str: return ""
     
     try:
@@ -109,14 +125,13 @@ def get_progress_bar_html(start_str, deadline_str, status):
         if total_duration <= 0: percent = 100
         else: percent = (elapsed / total_duration) * 100
         
-        # Xác định màu sắc
         if percent >= 100: 
-            color = "#dc3545" # Đỏ (Quá hạn)
+            color = "#dc3545" # Đỏ
             percent = 100
         elif percent >= 75: 
-            color = "#ffc107" # Vàng (Sắp đến hạn)
+            color = "#ffc107" # Vàng
         else: 
-            color = "#28a745" # Xanh (An toàn)
+            color = "#28a745" # Xanh
             
         return f"""
         <div style="width: 100%; background-color: #e9ecef; border-radius: 4px; height: 6px; margin-top: 5px;">
@@ -841,7 +856,8 @@ else:
             # Bộ lọc chi tiết
             with st.container(border=True):
                 c_fil1, c_fil2, c_fil3 = st.columns([2, 1, 1])
-                with c_fil1: search_kw = st.text_input("🔍 Tìm kiếm nhanh", placeholder="Nhập tên, SĐT, mã...")
+                # [CẬP NHẬT TÌM KIẾM] Thêm "thủ tục" vào placeholder
+                with c_fil1: search_kw = st.text_input("🔍 Tìm kiếm nhanh", placeholder="Nhập tên, SĐT, mã, thủ tục...")
                 with c_fil2: filter_stage = st.selectbox("📌 Lọc theo bước", ["Tất cả"] + STAGES_ORDER)
                 with c_fil3:
                     cur_filt = st.session_state.get('job_filter', 'all')
@@ -859,7 +875,8 @@ else:
 
             if search_kw:
                 s = search_kw.lower()
-                display_df['search_str'] = display_df.apply(lambda x: f"{x['id']} {x['customer_name']} {x['customer_phone']} {x['address']}".lower(), axis=1)
+                # [CẬP NHẬT TÌM KIẾM] Thêm extract_proc_from_log vào chuỗi tìm kiếm
+                display_df['search_str'] = display_df.apply(lambda x: f"{x['id']} {x['customer_name']} {x['customer_phone']} {x['address']} {extract_proc_from_log(x['logs'])}".lower(), axis=1)
                 display_df = display_df[display_df['search_str'].str.contains(s, na=False)]
 
             if filter_stage != "Tất cả":
@@ -908,9 +925,10 @@ else:
     elif sel == "📝 Tạo Hồ Sơ":
         st.title("Tạo Hồ Sơ")
         c1, c2 = st.columns(2); n = c1.text_input("Tên Khách Hàng"); p = c2.text_input("SĐT"); a = st.text_input("Địa chỉ")
-        c3, c4 = st.columns([1, 1]); 
-        with c3: is_sv = st.checkbox("🛠️ CHỈ ĐO ĐẠC")
-        with c4: proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
+        
+        # [MODIFIED] Xóa checkbox "Chỉ đo đạc" ở đây vì đã đưa vào list thủ tục
+        proc = st.selectbox("Thủ tục", PROCEDURES_LIST)
+        
         st.markdown("---")
         f = st.file_uploader("File (Có thể chọn nhiều)", accept_multiple_files=True, key=f"new_up_{st.session_state['uploader_key']}")
         st.markdown("---")
