@@ -45,6 +45,14 @@ def safe_int(value):
     try: return int(float(str(value).replace(",", "").replace(".", ""))) if pd.notna(value) and value != "" else 0
     except: return 0
 
+def get_proc_abbr(proc_name):
+    mapping = {
+        "Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ", 
+        "Tách thửa": "TT", "Thừa kế": "TK", 
+        "Cung cấp thông tin": "CCTT", "Đính chính": "DC"
+    }
+    return mapping.get(proc_name, "K")
+
 def extract_proc_from_log(log_text):
     match = re.search(r'Khởi tạo \((.*?)\)', str(log_text))
     return match.group(1) if match else "Khác"
@@ -59,8 +67,10 @@ def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
         d_obj = datetime.strptime(str(start_time), "%Y-%m-%d %H:%M:%S")
         date_str = d_obj.strftime('%d%m%y')
     except: date_str = "000000"; seq = "00"
+    abbr = get_proc_abbr(proc_name) if proc_name else ""
+    proc_str = f"-{abbr}" if abbr else ""
     clean_phone = str(phone).replace("'", "")
-    return f"{date_str}-{seq} {name} {clean_phone} {addr}"
+    return f"{date_str}-{seq}{proc_str} {name} {clean_phone} {addr}"
 
 def extract_files_from_log(log_text):
     pattern = r"File: (.*?) - (https?://[^\s]+)"
@@ -150,8 +160,6 @@ def inject_custom_css():
         .compact-btn button { padding: 0px 8px !important; min-height: 28px !important; height: 28px !important; font-size: 12px !important; margin-top: 0px !important; }
         div[data-testid="stExpanderDetails"] { padding-top: 10px !important; }
         .small-btn button { height: 32px; padding-top: 0px !important; padding-bottom: 0px !important; }
-        /* Style cho nút KPI */
-        div.stButton > button.kpi-btn { border: 1px solid #ddd; background: white; width: 100%; border-radius: 8px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -653,19 +661,20 @@ def render_optimized_list_view(df, user, role, user_list):
     df['sort_dl'] = pd.to_datetime(df['deadline'], errors='coerce').fillna(datetime.now() + timedelta(days=3650))
     df = df.sort_values(by=['status', 'sort_dl'], ascending=[True, True])
 
-    # 2. Phân trang
-    items_per_page = 10
+    # 2. Phân trang (20 hồ sơ/trang - Nút nhỏ gọn)
+    items_per_page = 20
     if 'page_num' not in st.session_state: st.session_state.page_num = 0
     total_pages = max(1, (len(df) - 1) // items_per_page + 1)
     
-    c_pag1, c_pag2, c_pag3 = st.columns([0.5, 3, 0.5]) # Nút nhỏ gọn hơn
-    with c_pag1:
-        if st.button("⬅️", disabled=(st.session_state.page_num == 0), use_container_width=True):
+    # Canh giữa nút phân trang
+    _, c_prev, c_text, c_next, _ = st.columns([4, 1, 3, 1, 4])
+    with c_prev:
+        if st.button("◀️", disabled=(st.session_state.page_num == 0), key="btn_prev"):
             st.session_state.page_num -= 1; st.rerun()
-    with c_pag2:
-        st.markdown(f"<div style='text-align:center; padding-top:5px; font-size:13px'>Trang {st.session_state.page_num + 1} / {total_pages} (Tổng: {len(df)} hồ sơ)</div>", unsafe_allow_html=True)
-    with c_pag3:
-        if st.button("➡️", disabled=(st.session_state.page_num >= total_pages - 1), use_container_width=True):
+    with c_text:
+        st.markdown(f"<div style='text-align:center; margin-top:5px; font-weight:bold; font-size:14px'>Trang {st.session_state.page_num + 1}/{total_pages}</div>", unsafe_allow_html=True)
+    with c_next:
+        if st.button("▶️", disabled=(st.session_state.page_num >= total_pages - 1), key="btn_next"):
             st.session_state.page_num += 1; st.rerun()
 
     start_idx = st.session_state.page_num * items_per_page
@@ -676,10 +685,13 @@ def render_optimized_list_view(df, user, role, user_list):
         st.info("Không có dữ liệu hiển thị.")
         return
 
+    st.markdown("---")
+
     for index, row in page_df.iterrows():
-        # Hiển thị mã đầy đủ
-        full_id = str(row['id'])
+        # Lấy dữ liệu hiển thị
         proc_name = extract_proc_from_log(row['logs'])
+        abbr = get_proc_abbr(proc_name)
+        full_display_id = f"#{row['id']}-{abbr}"
         clean_phone = str(row['customer_phone']).replace("'", "")
         
         # HTML Bar
@@ -687,16 +699,17 @@ def render_optimized_list_view(df, user, role, user_list):
         status_badge = get_status_badge_html(row)
         
         with st.container(border=True):
-            # Layout khoa học
-            c1, c2, c3, c4 = st.columns([1, 2.5, 1.5, 0.5])
+            # Layout khoa học: [ID & Tiến độ] | [Thông tin chính] | [Trạng thái & Nút]
+            c1, c2, c3, c4 = st.columns([1.2, 3, 1.2, 0.5])
             
             with c1:
-                st.markdown(f"**#{full_id}**")
+                st.markdown(f"**{full_display_id}**")
                 st.caption(f"{row['current_stage']}")
             
             with c2:
-                st.markdown(f"<span style='color:#007bff; font-weight:bold'>{row['customer_name']}</span>", unsafe_allow_html=True)
-                st.markdown(f"<div style='font-size:12px'>📞 {clean_phone}</div>", unsafe_allow_html=True)
+                st.markdown(f"<span style='color:#0d6efd; font-weight:bold; font-size:15px'>{row['customer_name']}</span>", unsafe_allow_html=True)
+                st.markdown(f"🏠 {row['address']}")
+                st.markdown(f"🔖 **{proc_name}** | 📞 {clean_phone}")
                 if progress_html: st.markdown(progress_html, unsafe_allow_html=True)
 
             with c3:
@@ -705,7 +718,7 @@ def render_optimized_list_view(df, user, role, user_list):
                 st.caption(f"👤 {assignee}")
 
             with c4:
-                # Nút chi tiết nhỏ gọn
+                # Nút chi tiết nhỏ gọn (Icon con mắt)
                 expand_key = f"exp_{row['id']}"
                 if st.button("👁️", key=f"btn_{row['id']}", help="Xem chi tiết"):
                      st.session_state[expand_key] = not st.session_state.get(expand_key, False)
@@ -798,7 +811,7 @@ else:
 
     sel = st.session_state['menu_selection']; user_list = get_active_users_list()
     
-    # --- PHẦN VIỆC CỦA TÔI TỐI ƯU ---
+    # --- PHẦN VIỆC CỦA TÔI (Đã Tối Ưu) ---
     if sel == "🏠 Việc Của Tôi":
         st.title("📋 Trung Tâm Điều Hành Hồ Sơ")
         if df.empty: st.info("Hệ thống chưa có dữ liệu.")
@@ -816,25 +829,24 @@ else:
             count_paused = len(my_df[my_df['status'] == 'Tạm dừng'])
             count_total = len(my_df)
 
-            # 4 Ô KPI CÓ THỂ BẤM ĐỂ LỌC
+            # 4 Ô KPI LỌC NHANH
             k1, k2, k3, k4 = st.columns(4)
             if k1.button(f"🔴 Quá Hạn ({count_overdue})", use_container_width=True): st.session_state['job_filter'] = 'overdue'
-            if k2.button(f"🟡 Sắp đến ({count_soon})", use_container_width=True): st.session_state['job_filter'] = 'urgent'
+            if k2.button(f"🟡 Sắp đến hạn ({count_soon})", use_container_width=True): st.session_state['job_filter'] = 'urgent'
             if k3.button(f"⛔ Tạm dừng ({count_paused})", use_container_width=True): st.session_state['job_filter'] = 'paused'
             if k4.button(f"🟢 Tổng ({count_total})", use_container_width=True): st.session_state['job_filter'] = 'all'
             
             st.divider()
 
-            # Bộ lọc
+            # Bộ lọc chi tiết
             with st.container(border=True):
                 c_fil1, c_fil2, c_fil3 = st.columns([2, 1, 1])
                 with c_fil1: search_kw = st.text_input("🔍 Tìm kiếm nhanh", placeholder="Nhập tên, SĐT, mã...")
                 with c_fil2: filter_stage = st.selectbox("📌 Lọc theo bước", ["Tất cả"] + STAGES_ORDER)
                 with c_fil3:
-                    # Hiển thị bộ lọc hiện tại
                     cur_filt = st.session_state.get('job_filter', 'all')
-                    map_filt = {'overdue': '🔴 QUÁ HẠN', 'urgent': '🟡 SẮP ĐẾN', 'paused': '⛔ TẠM DỪNG', 'all': '🟢 TẤT CẢ'}
-                    st.info(f"Đang lọc: {map_filt.get(cur_filt)}")
+                    map_filt = {'overdue': 'ĐANG LỌC: QUÁ HẠN', 'urgent': 'ĐANG LỌC: SẮP ĐẾN HẠN', 'paused': 'ĐANG LỌC: TẠM DỪNG', 'all': 'ĐANG HIỂN THỊ: TẤT CẢ'}
+                    st.info(map_filt.get(cur_filt))
 
             display_df = my_df.copy()
             # Logic lọc
