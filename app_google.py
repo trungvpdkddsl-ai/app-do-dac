@@ -9,6 +9,7 @@ import re
 import gspread
 import base64
 import calendar
+import io
 import altair as alt
 from google.oauth2.service_account import Credentials
 
@@ -25,7 +26,7 @@ DRIVE_FOLDER_ID = "1SrARuA1rgKLZmoObGor-GkNx33F6zNQy"
 
 ROLES = ["Quản lý", "Nhân viên", "Chưa cấp quyền"]
 
-# [CẬP NHẬT] DANH SÁCH BƯỚC MỚI (Bỏ "Tạo mới", Đo đạc lên số 1)
+# DANH SÁCH BƯỚC (Đo đạc là bước 1)
 STAGES_ORDER = [
     "1. Đo đạc", 
     "2. Hoàn thiện trích đo", 
@@ -38,7 +39,7 @@ STAGES_ORDER = [
 
 PROCEDURES_LIST = ["Cấp lần đầu", "Cấp đổi", "Chuyển quyền", "Tách thửa", "Thừa kế", "Cung cấp thông tin", "Đính chính", "Chỉ đo đạc"]
 
-# [CẬP NHẬT] WORKFLOW MỚI (Đánh số lại)
+# WORKFLOW
 WORKFLOW_FULL = {
     "1. Đo đạc": "2. Hoàn thiện trích đo", 
     "2. Hoàn thiện trích đo": "3. Làm hồ sơ",
@@ -49,9 +50,6 @@ WORKFLOW_FULL = {
     "7. Hoàn thành": None
 }
 
-# Quy trình rút gọn (Bỏ đo đạc nếu cần, hoặc bắt đầu từ Đo đạc rồi nhảy)
-# Với hồ sơ không cần đo, ta có thể cho đi từ 1->3 luôn hoặc bắt đầu từ 3.
-# Ở đây giả định vẫn đi qua bước 1 để log, sau đó nhảy cóc.
 WORKFLOW_SHORT = {
     "1. Đo đạc": "3. Làm hồ sơ", 
     "3. Làm hồ sơ": "4. Ký hồ sơ", 
@@ -61,21 +59,15 @@ WORKFLOW_SHORT = {
     "7. Hoàn thành": None
 }
 
-# Quy trình "Chỉ đo đạc" (1 -> 2 -> 7 Hoàn thành)
 WORKFLOW_ONLY_SURVEY = {
     "1. Đo đạc": "2. Hoàn thiện trích đo",
     "2. Hoàn thiện trích đo": "7. Hoàn thành", 
     "7. Hoàn thành": None
 }
 
-# SLA cập nhật theo tên bước mới
 STAGE_SLA_HOURS = {
-    "1. Đo đạc": 24, 
-    "2. Hoàn thiện trích đo": 24, 
-    "3. Làm hồ sơ": 24, 
-    "4. Ký hồ sơ": 72, 
-    "5. Lấy hồ sơ": 24, 
-    "6. Nộp hồ sơ": 360
+    "1. Đo đạc": 24, "2. Hoàn thiện trích đo": 24, "3. Làm hồ sơ": 24, 
+    "4. Ký hồ sơ": 72, "5. Lấy hồ sơ": 24, "6. Nộp hồ sơ": 360
 }
 
 # --- 2. HÀM HỖ TRỢ & KẾT NỐI ---
@@ -87,8 +79,7 @@ def get_proc_abbr(proc_name):
     mapping = {
         "Cấp lần đầu": "CLD", "Cấp đổi": "CD", "Chuyển quyền": "CQ", 
         "Tách thửa": "TT", "Thừa kế": "TK", 
-        "Cung cấp thông tin": "CCTT", "Đính chính": "DC",
-        "Chỉ đo đạc": "CDD"
+        "Cung cấp thông tin": "CCTT", "Đính chính": "DC", "Chỉ đo đạc": "CDD"
     }
     return mapping.get(proc_name, "K")
 
@@ -99,17 +90,16 @@ def extract_proc_from_log(log_text):
 def get_next_stage_dynamic(current_stage, proc_name):
     if proc_name == "Chỉ đo đạc": return WORKFLOW_ONLY_SURVEY.get(current_stage)
     if proc_name in ["Cung cấp thông tin", "Đính chính"]: 
-        # Nếu đang ở bước 1 mà là hồ sơ rút gọn thì nhảy sang 3
         if current_stage == "1. Đo đạc": return "3. Làm hồ sơ"
         return WORKFLOW_SHORT.get(current_stage)
     return WORKFLOW_FULL.get(current_stage)
 
 def generate_unique_name(jid, start_time, name, phone, addr, proc_name):
     try:
-        jid_str = str(jid); seq = jid_str[-2:] 
         d_obj = datetime.strptime(str(start_time), "%Y-%m-%d %H:%M:%S")
         date_str = d_obj.strftime('%d%m%y')
-    except: date_str = "000000"; seq = "00"
+    except: date_str = "000000"
+    jid_str = str(jid); seq = jid_str[-2:]
     abbr = get_proc_abbr(proc_name) if proc_name else ""
     proc_str = f"-{abbr}" if abbr else ""
     clean_phone = str(phone).replace("'", "")
@@ -137,36 +127,70 @@ def get_drive_id(link):
 
 # --- HÀM TÍNH TIẾN ĐỘ & HTML BAR ---
 def get_progress_bar_html(start_str, deadline_str, status):
-    if status in ["Hoàn thành", "Đã xóa", "Kết thúc sớm"]: 
-        return ""
+    if status in ["Hoàn thành", "Đã xóa", "Kết thúc sớm"]: return ""
     if not start_str or not deadline_str: return ""
-    
     try:
         start = pd.to_datetime(start_str)
         deadline = pd.to_datetime(deadline_str)
         now = datetime.now()
-        
         total_duration = (deadline - start).total_seconds()
         elapsed = (now - start).total_seconds()
-        
         if total_duration <= 0: percent = 100
         else: percent = (elapsed / total_duration) * 100
         
-        if percent >= 100: 
-            color = "#dc3545" # Đỏ
-            percent = 100
-        elif percent >= 75: 
-            color = "#ffc107" # Vàng
-        else: 
-            color = "#28a745" # Xanh
+        if percent >= 100: color = "#dc3545"; percent = 100
+        elif percent >= 75: color = "#ffc107"
+        else: color = "#28a745"
             
-        return f"""
-        <div style="width: 100%; background-color: #e9ecef; border-radius: 4px; height: 6px; margin-top: 5px;">
-            <div style="width: {percent}%; background-color: {color}; height: 6px; border-radius: 4px;"></div>
-        </div>
-        """
-    except:
-        return ""
+        return f"""<div style="width: 100%; background-color: #e9ecef; border-radius: 4px; height: 6px; margin-top: 5px;"><div style="width: {percent}%; background-color: {color}; height: 6px; border-radius: 4px;"></div></div>"""
+    except: return ""
+
+# --- [FIXED] HÀM XUẤT EXCEL AN TOÀN (KHÔNG LỖI KHI THIẾU THƯ VIỆN) ---
+def generate_excel_download(df):
+    output = io.BytesIO()
+    
+    # 1. Chuẩn bị dữ liệu đẹp
+    export_df = df.copy()
+    export_df['Thủ tục'] = export_df['logs'].apply(extract_proc_from_log)
+    export_df['SĐT'] = export_df['customer_phone'].astype(str).str.replace("'", "")
+    export_df['assigned_to'] = export_df['assigned_to'].apply(lambda x: x.split(' - ')[0] if x else "Chưa giao")
+    
+    # Sắp xếp cột khoa học theo yêu cầu
+    final_df = export_df[[
+        'id', 'Thủ tục', 'current_stage', 'assigned_to', 'status',
+        'customer_name', 'SĐT', 'address',
+        'start_time', 'deadline', 'survey_fee'
+    ]]
+    
+    final_df.columns = [
+        'Mã HS', 'Loại Thủ Tục', 'Bước Hiện Tại', 'Người Thực Hiện', 'Trạng Thái',
+        'Tên Khách Hàng', 'SĐT', 'Địa Chỉ',
+        'Ngày Nhận', 'Hạn Chót', 'Phí Dịch Vụ'
+    ]
+    
+    # 2. Ghi ra Excel (Có try/except để tránh crash)
+    try:
+        # Cố gắng dùng xlsxwriter để format đẹp
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            final_df.to_excel(writer, index=False, sheet_name='DanhSachHoSo')
+            workbook = writer.book
+            worksheet = writer.sheets['DanhSachHoSo']
+            header_fmt = workbook.add_format({'bold': True, 'fg_color': '#D7E4BC', 'border': 1})
+            for col_num, value in enumerate(final_df.columns.values):
+                worksheet.write(0, col_num, value, header_fmt)
+            worksheet.set_column('A:A', 15) 
+            worksheet.set_column('B:B', 20) 
+            worksheet.set_column('C:C', 25) 
+            worksheet.set_column('D:D', 20) 
+            worksheet.set_column('E:E', 15) 
+            worksheet.set_column('F:F', 30) 
+    except Exception as e:
+        # Nếu lỗi (do thiếu thư viện xlsxwriter), dùng engine mặc định
+        output = io.BytesIO() # Reset buffer
+        with pd.ExcelWriter(output) as writer:
+            final_df.to_excel(writer, index=False, sheet_name='DanhSachHoSo')
+        
+    return output.getvalue()
 
 # --- HELPER UI & CSS ---
 def get_status_badge_html(row):
@@ -174,26 +198,18 @@ def get_status_badge_html(row):
     deadline = pd.to_datetime(row['deadline'], errors='coerce')
     now = datetime.now()
     logs = str(row.get('logs', ''))
-
     color, bg_color, text = "#28a745", "#e6fffa", "Đang thực hiện"
     
     if status == "Tạm dừng":
         if "Hoàn thành - Chưa thanh toán" in logs:
             color, bg_color, text = "#fd7e14", "#fff3cd", "⚠️ Xong - Chưa TT"
-        else:
-            color, bg_color, text = "#6c757d", "#f8f9fa", "⛔ Tạm dừng"
-    elif status == "Hoàn thành":
-        color, bg_color, text = "#004085", "#cce5ff", "✅ Hoàn thành"
-    elif status == "Đã xóa":
-        color, bg_color, text = "#343a40", "#e2e6ea", "🗑️ Đã xóa"
-    elif status == "Kết thúc sớm":
-        color, bg_color, text = "#343a40", "#e2e6ea", "⏹️ Kết thúc"
+        else: color, bg_color, text = "#6c757d", "#f8f9fa", "⛔ Tạm dừng"
+    elif status == "Hoàn thành": color, bg_color, text = "#004085", "#cce5ff", "✅ Hoàn thành"
+    elif status == "Đã xóa": color, bg_color, text = "#343a40", "#e2e6ea", "🗑️ Đã xóa"
+    elif status == "Kết thúc sớm": color, bg_color, text = "#343a40", "#e2e6ea", "⏹️ Kết thúc"
     else:
-        if pd.notna(deadline) and now > deadline:
-            color, bg_color, text = "#dc3545", "#ffe6e6", "🔴 Quá hạn"
-        elif pd.notna(deadline) and now <= deadline <= now + timedelta(hours=24):
-            color, bg_color, text = "#fd7e14", "#fff3cd", "⚠️ Sắp đến hạn"
-
+        if pd.notna(deadline) and now > deadline: color, bg_color, text = "#dc3545", "#ffe6e6", "🔴 Quá hạn"
+        elif pd.notna(deadline) and now <= deadline <= now + timedelta(hours=24): color, bg_color, text = "#fd7e14", "#fff3cd", "⚠️ Sắp đến hạn"
     return f"""<span style='background-color: {bg_color}; color: {color}; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px; border: 1px solid {color}; white-space: nowrap;'>{text}</span>"""
 
 def inject_custom_css():
@@ -376,8 +392,7 @@ def add_job(n, p, a, proc, f, u, asn):
     dl = dl_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     assign_info = f" -> Giao: {asn.split(' - ')[0]}" if asn else ""
-    
-    # [CẬP NHẬT] Khởi tạo hồ sơ: Trạng thái bắt đầu là "1. Đo đạc"
+    # [CẬP NHẬT] Trạng thái đầu tiên là "1. Đo đạc"
     log = f"[{now_str}] {u}: Khởi tạo ({proc}) -> 1. Đo đạc{assign_info}{log_file_str}"
     asn_clean = asn.split(" - ")[0] if asn else ""
     
@@ -458,7 +473,6 @@ def return_to_previous_stage(jid, current_stage, reason, u):
             while temp_idx >= 0:
                 candidate = STAGES_ORDER[temp_idx]
                 if proc_name in ["Cung cấp thông tin", "Đính chính"]:
-                      # Nếu là thủ tục rút gọn, bỏ qua đo đạc/trích đo nếu lùi từ làm hồ sơ
                       if candidate in ["1. Đo đạc", "2. Hoàn thiện trích đo"]:
                           temp_idx -= 1; continue
                 prev_stage = candidate; break
@@ -890,7 +904,7 @@ else:
                 # [MODIFIED] Thêm filter thủ tục và bỏ "1. Tạo mới" khỏi bước
                 c_fil1, c_fil2, c_fil3, c_fil4 = st.columns([2, 1.5, 1.5, 1])
                 with c_fil1: search_kw = st.text_input("🔍 Tìm kiếm nhanh", placeholder="Nhập tên, SĐT, mã, thủ tục...")
-                with c_fil2: filter_stage = st.selectbox("📌 Bước hiện tại", ["Tất cả"] + STAGES_ORDER) # "1. Đo đạc" giờ là đầu tiên
+                with c_fil2: filter_stage = st.selectbox("📌 Bước hiện tại", ["Tất cả"] + STAGES_ORDER)
                 with c_fil3: filter_proc = st.selectbox("📂 Loại thủ tục", ["Tất cả"] + PROCEDURES_LIST)
                 with c_fil4:
                     cur_filt = st.session_state.get('job_filter', 'all')
@@ -1059,6 +1073,18 @@ else:
         st.title("📊 Dashboard Quản Trị")
         active_df = df[df['status'] != 'Đã xóa'].copy()
         if not active_df.empty:
+            # [NEW] Button xuất Excel
+            st.markdown("### 📥 Xuất Dữ Liệu")
+            excel_data = generate_excel_download(active_df)
+            st.download_button(
+                label="📥 Tải xuống Excel toàn bộ hồ sơ",
+                data=excel_data,
+                file_name=f"DanhSachHoSo_{datetime.now().strftime('%d%m%Y')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_excel"
+            )
+            st.divider()
+
             active_df['start_dt'] = pd.to_datetime(active_df['start_time'], errors='coerce')
             active_df['month_year'] = active_df['start_dt'].dt.to_period('M')
             active_df['fee_float'] = active_df['survey_fee'].apply(safe_int)
