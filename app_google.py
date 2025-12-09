@@ -774,7 +774,7 @@ if 'user' in st.query_params and not st.session_state['logged_in']:
         st.session_state['role'] = df_u[df_u['username'] == saved_user]['role'].values[0] if saved_user in df_u['username'].values else "Nhân viên"
 
 if not st.session_state['logged_in']:
-    # --- CSS CHO GIAO DIỆN LOGIN ĐẸP ---
+    # --- GIAO DIỆN LOGIN MỚI ĐẸP ---
     st.markdown("""
     <style>
         header {visibility: hidden;}
@@ -823,7 +823,6 @@ if not st.session_state['logged_in']:
     </style>
     """, unsafe_allow_html=True)
 
-    # --- BỐ CỤC CHÍNH ---
     c1, c2, c3 = st.columns([1, 1.5, 1])
     
     with c2:
@@ -1094,7 +1093,6 @@ else:
             if not unpaid_df.empty:
                 display_debt = pd.DataFrame()
                 display_debt['Mã HS'] = unpaid_df['id']
-                # FIX LỖI TYPE ERROR Ở ĐÂY
                 display_debt['Khách Hàng'] = unpaid_df['customer_name'].astype(str) + " - " + unpaid_df['customer_phone'].astype(str)
                 display_debt['Phí Đo Đạc'] = unpaid_df['fee_float']
                 display_debt['Trạng Thái'] = "Chưa thu đủ"
@@ -1152,22 +1150,62 @@ else:
                     staff_metrics.append({"Nhân viên": u.split(' - ')[0], "Đang làm": len(doing), "Đã xong": len(done)})
                 st.dataframe(pd.DataFrame(staff_metrics), use_container_width=True, hide_index=True)
 
+    # --- PHẦN NHÂN SỰ ĐƯỢC TỐI ƯU HÓA ---
     elif sel == "👥 Nhân Sự":
         if role == "Quản lý":
-            st.title("Phân Quyền"); df = get_all_users()
-            for i, u in df.iterrows():
+            st.title("👥 Quản Lý & Phân Quyền")
+            
+            df_users = get_all_users()
+            df_jobs = get_all_jobs_df()
+            
+            if not df_users.empty:
+                c_stat1, c_stat2, c_stat3 = st.columns(3)
+                c_stat1.metric("Tổng nhân sự", len(df_users))
+                c_stat2.metric("Quản lý", len(df_users[df_users['role'] == 'Quản lý']))
+                c_stat3.metric("Nhân viên", len(df_users[df_users['role'] == 'Nhân viên']))
+            
+            st.markdown("---")
+            search_u = st.text_input("🔍 Tìm nhân viên:", placeholder="Nhập tên hoặc user...")
+            
+            if search_u:
+                search_u = search_u.lower()
+                df_users = df_users[df_users['fullname'].str.lower().str.contains(search_u) | df_users['username'].str.lower().str.contains(search_u)]
+
+            st.write(f"###### Danh sách ({len(df_users)})")
+            
+            for i, u in df_users.iterrows():
+                active_count = 0
+                if not df_jobs.empty:
+                    active_count = len(df_jobs[
+                        (df_jobs['assigned_to'].astype(str).str.contains(u['username'], na=False)) & 
+                        (~df_jobs['status'].isin(['Hoàn thành', 'Đã xóa', 'Kết thúc sớm']))
+                    ])
+                
+                job_status_text = f"🔥 Đang xử lý: **{active_count}** hồ sơ" if active_count > 0 else "🟢 Đang rảnh"
+
                 with st.container(border=True):
-                    c1, c2, c3 = st.columns([0.6, 0.3, 0.1])
-                    with c1: st.subheader(f"👤 {u['fullname']}"); st.caption(f"User: {u['username']}")
+                    c1, c2, c3, c4 = st.columns([0.8, 2, 1.5, 0.5])
+                    with c1:
+                        st.markdown(f"<div style='font-size:30px; text-align:center; background:#f0f2f6; border-radius:50%; width:50px; height:50px; line-height:50px;'>👤</div>", unsafe_allow_html=True)
                     with c2:
-                        if u['username']!=user:
-                            idx = ROLES.index(u['role']) if u['role'] in ROLES else 2; nr = st.selectbox("", ROLES, index=idx, key=u['username'], label_visibility="collapsed")
-                            if nr!=u['role']: update_user_role(u['username'], nr); st.toast("Đã lưu!"); time.sleep(0.5); st.rerun()
-                        else: st.info("Admin")
+                        st.markdown(f"**{u['fullname']}**")
+                        st.caption(f"User: `{u['username']}`")
+                        st.markdown(f"<span style='font-size:12px; color:#555'>{job_status_text}</span>", unsafe_allow_html=True)
                     with c3:
-                        if u['username']!=user:
-                            if st.button("🗑️", key=f"del_u_{u['username']}"): delete_user_permanently(u['username']); st.rerun()
-        else: st.error("Cấm truy cập!")
+                        if u['username'] != user:
+                            idx = ROLES.index(u['role']) if u['role'] in ROLES else 2
+                            nr = st.selectbox("Vai trò", ROLES, index=idx, key=f"role_{u['username']}", label_visibility="collapsed")
+                            if nr != u['role']: 
+                                update_user_role(u['username'], nr)
+                                st.toast(f"Đã cập nhật {u['fullname']} thành {nr}"); time.sleep(0.5); st.rerun()
+                        else: st.info("Quản trị viên (Bạn)")
+                    with c4:
+                        if u['username'] != user:
+                            with st.popover("🗑️", help="Xóa nhân viên"):
+                                st.write(f"Xóa **{u['fullname']}**?")
+                                if st.button("Xác nhận xóa", key=f"confirm_del_{u['username']}", type="primary"):
+                                    delete_user_permanently(u['username']); st.rerun()
+        else: st.error("⛔ Bạn không có quyền truy cập trang này!")
 
     elif sel == "🗑️ Thùng Rác":
         if role == "Quản lý":
