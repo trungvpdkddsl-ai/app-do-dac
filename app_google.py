@@ -14,7 +14,7 @@ import altair as alt
 from google.oauth2.service_account import Credentials
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Đo Đạc Cloud V3-Pro (Optimized)", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V3-Pro (Excel)", page_icon="☁️", layout="wide")
 
 TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
 TELEGRAM_CHAT_ID = "-5055192262"
@@ -118,14 +118,21 @@ def get_progress_bar_html(start_str, deadline_str, status):
         return f"""<div style="width: 100%; background-color: #e9ecef; border-radius: 4px; height: 6px; margin-top: 5px;"><div style="width: {percent}%; background-color: {color}; height: 6px; border-radius: 4px;"></div></div>"""
     except: return ""
 
+# --- [NEW] HÀM XUẤT EXCEL THAY CHO CSV ---
 def generate_excel_download(df):
     export_df = df.copy()
     export_df['Thủ tục'] = export_df['logs'].apply(extract_proc_from_log)
     export_df['SĐT'] = export_df['customer_phone'].astype(str).str.replace("'", "")
     export_df['assigned_to'] = export_df['assigned_to'].apply(lambda x: x.split(' - ')[0] if x else "Chưa giao")
+    
     final_df = export_df[['id', 'Thủ tục', 'current_stage', 'assigned_to', 'status', 'customer_name', 'SĐT', 'address', 'start_time', 'deadline', 'survey_fee']]
     final_df.columns = ['Mã HS', 'Loại Thủ Tục', 'Bước Hiện Tại', 'Người Thực Hiện', 'Trạng Thái', 'Tên Khách Hàng', 'SĐT', 'Địa Chỉ', 'Ngày Nhận', 'Hạn Chót', 'Phí Dịch Vụ']
-    return final_df.to_csv(index=False).encode('utf-8-sig')
+    
+    output = io.BytesIO()
+    # Yêu cầu cài đặt: pip install openpyxl
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        final_df.to_excel(writer, index=False, sheet_name='DanhSachHoSo')
+    return output.getvalue()
 
 def get_status_badge_html(row):
     status = row['status']; deadline = pd.to_datetime(row['deadline'], errors='coerce'); now = datetime.now(); logs = str(row.get('logs', ''))
@@ -148,7 +155,6 @@ def inject_custom_css():
 def get_gcp_creds(): 
     return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
 
-# [OPTIMIZED] Hàm này được Cache để tránh gọi Google quá nhiều
 @st.cache_data(ttl=600) 
 def get_all_jobs_df_cached():
     try: 
@@ -164,10 +170,8 @@ def get_all_jobs_df_cached():
         return df
     except: return pd.DataFrame()
 
-# Hàm Wrapper để dùng trong code cũ
 def get_all_jobs_df(): return get_all_jobs_df_cached()
 
-# [OPTIMIZED] Hàm này xóa Cache để cập nhật dữ liệu mới
 def clear_cache():
     get_all_jobs_df_cached.clear()
     get_all_users_cached.clear()
@@ -212,7 +216,7 @@ def delete_file_system(job_id, file_link, file_name, user):
         sh.update_cell(r, 11, new_log)
         if sh.cell(r, 10).value == file_link: sh.update_cell(r, 10, "")
         log_to_audit(user, "DELETE_FILE", f"Job {job_id}: Deleted file {file_name}")
-        clear_cache() # [NEW]
+        clear_cache()
 
 # --- AUTH & UTILS ---
 def make_hash(p): return hashlib.sha256(str.encode(p)).hexdigest()
@@ -270,13 +274,12 @@ def get_daily_sequence_id():
     else: max_seq = max([int(jid[-2:]) for jid in today_ids]); seq = max_seq + 1
     return int(f"{prefix}{seq:02}"), f"{seq:02}"
 
-# --- SCHEDULER (GIỮ NGUYÊN) ---
+# --- SCHEDULER ---
 def run_schedule_check():
     while True:
         now = datetime.now()
         if (now.hour == 8 or now.hour == 13) and now.minute < 5:
             try:
-                # Scheduler sẽ gọi hàm không cache để lấy dữ liệu realtime
                 creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC").sheet1
                 data = sh.get_all_records(); df = pd.DataFrame(data)
                 
@@ -323,7 +326,7 @@ def add_job(n, p, a, proc, f, u, asn):
     sh.append_row([jid, now_str, n, phone_db, a, "1. Đo đạc", "Đang xử lý", asn_clean, dl, link, log, 0, 0, 0, 0])
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
     
-    clear_cache() # [NEW] Cập nhật ngay
+    clear_cache()
     send_telegram_msg(f"🚀 <b>MỚI #{seq_str} ({proc.upper()})</b>\n📂 <b>{full_name_str}</b>\n👉 <b>{asn_clean}</b>")
 
 def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amount, is_paid, result_date=None):
@@ -370,7 +373,7 @@ def update_stage(jid, stg, nt, f_list, u, asn, d, is_survey, deposit_ok, fee_amo
             sh.update_cell(r, 11, olog + nlog)
             if nxt=="7. Hoàn thành": sh.update_cell(r, 7, "Hoàn thành")
             
-            clear_cache() # [NEW]
+            clear_cache()
             log_to_audit(u, "UPDATE_STAGE", f"ID: {jid}, {stg} -> {nxt}")
             send_telegram_msg(f"✅ <b>CẬP NHẬT</b>\n📂 <b>{full_code}</b>\n{stg} ➡ <b>{nxt}</b>\n👤 {u}{assign_tele}")
 
@@ -930,9 +933,12 @@ else:
                 c_exp1, c_exp2 = st.columns(2)
                 time_mode = c_exp1.selectbox("📅 Khoảng thời gian", ["Toàn bộ", "Tháng này", "Tháng trước", "Tùy chọn ngày"])
                 status_filter = c_exp2.radio("⚙️ Trạng thái hồ sơ", ["Tất cả", "Chỉ hồ sơ đang làm (Loại bỏ Hoàn thành/Kết thúc)"])
+                
                 active_df['start_dt'] = pd.to_datetime(active_df['start_time'], errors='coerce')
                 filtered_export = active_df.copy(); today = date.today()
-                if time_mode == "Tháng này": filtered_export = filtered_export[filtered_export['start_dt'].dt.date >= today.replace(day=1)]
+                
+                if time_mode == "Tháng này": 
+                    filtered_export = filtered_export[filtered_export['start_dt'].dt.date >= today.replace(day=1)]
                 elif time_mode == "Tháng trước":
                     first_day_this_month = today.replace(day=1); last_day_prev_month = first_day_this_month - timedelta(days=1)
                     first_day_prev_month = last_day_prev_month.replace(day=1)
@@ -940,8 +946,19 @@ else:
                 elif time_mode == "Tùy chọn ngày":
                     d_range = st.date_input("Chọn khoảng ngày", [])
                     if len(d_range) == 2: filtered_export = filtered_export[(filtered_export['start_dt'].dt.date >= d_range[0]) & (filtered_export['start_dt'].dt.date <= d_range[1])]
-                if status_filter == "Chỉ hồ sơ đang làm (Loại bỏ Hoàn thành/Kết thúc)": filtered_export = filtered_export[~filtered_export['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
-                st.download_button(label=f"📥 Tải xuống CSV ({len(filtered_export)} hồ sơ)", data=generate_excel_download(filtered_export), file_name=f"BaoCao_{datetime.now().strftime('%d%m%Y_%H%M')}.csv", mime="text/csv", key="download_csv_custom")
+                
+                if status_filter == "Chỉ hồ sơ đang làm (Loại bỏ Hoàn thành/Kết thúc)": 
+                    filtered_export = filtered_export[~filtered_export['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
+                
+                # [MODIFIED] XUẤT EXCEL THAY VÌ CSV
+                excel_data = generate_excel_download(filtered_export)
+                st.download_button(
+                    label=f"📥 Tải xuống Excel (.xlsx) - {len(filtered_export)} hồ sơ", 
+                    data=excel_data, 
+                    file_name=f"BaoCao_DoDac_{datetime.now().strftime('%d%m%Y_%H%M')}.xlsx", 
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                    key="download_excel_real"
+                )
 
             st.divider()
             active_df['month_year'] = active_df['start_dt'].dt.to_period('M'); active_df['fee_float'] = active_df['survey_fee'].apply(safe_int)
