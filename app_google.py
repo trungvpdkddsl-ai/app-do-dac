@@ -10,11 +10,11 @@ import gspread
 import base64
 import calendar
 import io
-import altair as alt
+import urllib.parse
 from google.oauth2.service_account import Credentials
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
-st.set_page_config(page_title="Đo Đạc Cloud V3-Pro (Excel)", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Đo Đạc Cloud V4-Ult", page_icon="☁️", layout="wide")
 
 TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
 TELEGRAM_CHAT_ID = "-5055192262"
@@ -123,10 +123,8 @@ def generate_excel_download(df):
     export_df['Thủ tục'] = export_df['logs'].apply(extract_proc_from_log)
     export_df['SĐT'] = export_df['customer_phone'].astype(str).str.replace("'", "")
     export_df['assigned_to'] = export_df['assigned_to'].apply(lambda x: x.split(' - ')[0] if x else "Chưa giao")
-    
     final_df = export_df[['id', 'Thủ tục', 'current_stage', 'assigned_to', 'status', 'customer_name', 'SĐT', 'address', 'start_time', 'deadline', 'survey_fee']]
     final_df.columns = ['Mã HS', 'Loại Thủ Tục', 'Bước Hiện Tại', 'Người Thực Hiện', 'Trạng Thái', 'Tên Khách Hàng', 'SĐT', 'Địa Chỉ', 'Ngày Nhận', 'Hạn Chót', 'Phí Dịch Vụ']
-    
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         final_df.to_excel(writer, index=False, sheet_name='DanhSachHoSo')
@@ -149,6 +147,22 @@ def get_status_badge_html(row):
 def inject_custom_css():
     st.markdown("""<style>.compact-btn button { padding: 0px 8px !important; min-height: 28px !important; height: 28px !important; font-size: 12px !important; margin-top: 0px !important; } div[data-testid="stExpanderDetails"] { padding-top: 10px !important; } .small-btn button { height: 32px; padding-top: 0px !important; padding-bottom: 0px !important; }</style>""", unsafe_allow_html=True)
 
+# --- [NEW] HÀM CHO WIKI & CALENDAR ---
+def create_google_cal_link(title, deadline_str, location, description):
+    try:
+        if not deadline_str: return None
+        dt = pd.to_datetime(deadline_str)
+        start_time = dt.strftime('%Y%m%dT%H%M00')
+        end_time = (dt + timedelta(hours=1)).strftime('%Y%m%dT%H%M00')
+        base_url = "https://calendar.google.com/calendar/render?action=TEMPLATE"
+        # Encode URL parameters
+        safe_title = urllib.parse.quote(title)
+        safe_desc = urllib.parse.quote(description)
+        safe_loc = urllib.parse.quote(location)
+        params = f"&text={safe_title}&dates={start_time}/{end_time}&details={safe_desc}&location={safe_loc}&sf=true&output=xml"
+        return base_url + params
+    except: return None
+
 # --- GOOGLE API & CACHING (TỐI ƯU HÓA) ---
 def get_gcp_creds(): 
     return Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
@@ -165,12 +179,10 @@ def get_all_jobs_df_cached():
             if 'is_paid' not in df.columns: df['is_paid'] = 0
             if 'file_link' not in df.columns: df['file_link'] = ""
             if 'start_time' in df.columns: df['start_dt'] = pd.to_datetime(df['start_time'], errors='coerce').dt.date
-            
-            # --- [NEW] CỘT GHI CHÚ ---
+            # --- CỘT GHI CHÚ ---
             if 'manager_note' not in df.columns: df['manager_note'] = ""
             if 'staff_note' not in df.columns: df['staff_note'] = ""
-            # -------------------------
-            
+            # -------------------
         return df
     except: return pd.DataFrame()
 
@@ -179,6 +191,7 @@ def get_all_jobs_df(): return get_all_jobs_df_cached()
 def clear_cache():
     get_all_jobs_df_cached.clear()
     get_all_users_cached.clear()
+    # Nếu cache wiki có thể clear ở đây nhưng để riêng cho nhẹ
 
 def get_sheet(sheet_name="DB_DODAC"):
     try: creds = get_gcp_creds(); client = gspread.authorize(creds); return client.open(sheet_name).sheet1
@@ -190,6 +203,10 @@ def get_users_sheet():
 
 def get_audit_sheet():
     try: creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC"); return sh.worksheet("AUDIT_LOGS")
+    except: return None
+
+def get_wiki_sheet():
+    try: creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC"); return sh.worksheet("WIKI")
     except: return None
 
 # --- FILE UPLOAD & ACTIONS ---
@@ -327,7 +344,7 @@ def add_job(n, p, a, proc, f, u, asn):
     log = f"[{now_str}] {u}: Khởi tạo ({proc}) -> 1. Đo đạc{assign_info}{log_file_str}"
     asn_clean = asn.split(" - ")[0] if asn else ""
     
-    # [UPDATED] Thêm 2 cột trống cho Note vào cuối dòng
+    # [IMPORTANT] Cập nhật thêm 2 cột Note trống vào cuối (Total 17 columns)
     sh.append_row([jid, now_str, n, phone_db, a, "1. Đo đạc", "Đang xử lý", asn_clean, dl, link, log, 0, 0, 0, 0, "", ""])
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
     
@@ -479,7 +496,6 @@ def update_notes_content(jid, note_type, content, u):
         sh.update_cell(r, col_idx, content)
         clear_cache()
         st.toast("Đã lưu nội dung trao đổi!")
-# ----------------------------------
 
 # --- UI COMPONENTS ---
 def change_menu(new_menu):
@@ -496,6 +512,7 @@ def render_square_menu(role):
              st.button("🗑️ Thùng Rác", on_click=change_menu, args=("🗑️ Thùng Rác",))
     with c2:
         st.button("📅 Lịch Biểu", on_click=change_menu, args=("📅 Lịch Biểu",))
+        st.button("📚 Thư Viện", on_click=change_menu, args=("📚 Thư Viện",))
         st.button("🗄️ Lưu Trữ", on_click=change_menu, args=("🗄️ Lưu Trữ",)) 
         st.button("📊 Báo Cáo", on_click=change_menu, args=("📊 Báo Cáo",))
         if role == "Quản lý":
@@ -602,8 +619,26 @@ def render_job_card_content(j, user, role, user_list):
             st.info("🏢 **ĐANG CHỜ KẾT QUẢ TỪ CƠ QUAN CHỨC NĂNG**")
             c_d, c_b = st.columns([2,1])
             new_date = c_d.date_input("Hẹn trả:", value=dl_dt.date(), key=f"d7_{j['id']}", label_visibility="collapsed")
+            
             if c_b.button("Lưu hẹn", key=f"s7_{j['id']}"):
                  update_deadline_custom(j['id'], new_date, user); st.rerun()
+            
+            # --- [NEW] NÚT THÊM VÀO LỊCH GOOGLE ---
+            cal_link = create_google_cal_link(
+                title=f"Trả hồ sơ: {j['customer_name']}",
+                deadline_str=j['deadline'],
+                location=j['address'],
+                description=f"SĐT: {j['customer_phone']} | Thủ tục: {proc_name} | Mã HS: {j['id']}"
+            )
+            if cal_link:
+                st.markdown(f"""
+                    <a href="{cal_link}" target="_blank" style="text-decoration:none;">
+                        <button style="width:100%; margin-top:5px; background-color:#ffffff; border:1px solid #dadce0; border-radius:4px; color:#3c4043; font-weight:500; padding:6px; display:flex; align-items:center; justify-content:center; cursor:pointer;">
+                            📅 Thêm vào Google Calendar
+                        </button>
+                    </a>
+                """, unsafe_allow_html=True)
+            # --------------------------------------
             
             st.divider()
             st.write("🏁 **Xác nhận kết quả:**")
@@ -762,6 +797,54 @@ def render_optimized_list_view(df, user, role, user_list):
                 st.markdown("---")
                 render_job_card_content(row, user, role, user_list)
 
+# --- [NEW] GIAO DIỆN WIKI ---
+def render_wiki_page(role):
+    st.title("📚 Thư Viện Kiến Thức & Biểu Mẫu")
+    sh = get_wiki_sheet()
+    if not sh: st.error("⚠️ Không tìm thấy Sheet 'WIKI'. Vui lòng tạo Sheet này trên Google Spreadsheet."); return
+
+    # Lấy dữ liệu
+    data = sh.get_all_records()
+    df_wiki = pd.DataFrame(data)
+
+    # Phần dành cho Quản lý: Thêm bài viết mới
+    if role == "Quản lý":
+        with st.expander("➕ Thêm tài liệu mới (Admin)", expanded=False):
+            with st.form("add_wiki"):
+                c1, c2 = st.columns([1, 2])
+                cat = c1.selectbox("Danh mục", ["Quy định pháp lý", "Mẫu đơn từ", "Quy định tách thửa", "Hướng dẫn nội bộ", "Khác"])
+                tit = c2.text_input("Tiêu đề")
+                cont = st.text_area("Nội dung tóm tắt")
+                lnk = st.text_input("Link tài liệu (Drive/Web)")
+                if st.form_submit_button("Lưu tài liệu"):
+                    sh.append_row([cat, tit, cont, lnk])
+                    st.toast("Đã thêm tài liệu!"); time.sleep(1); st.rerun()
+
+    if df_wiki.empty:
+        st.info("Chưa có tài liệu nào.")
+        return
+
+    # Giao diện Tìm kiếm & Hiển thị
+    cats = ["Tất cả"] + sorted(list(set(df_wiki['category'].tolist())))
+    sel_cat = st.selectbox("📂 Lọc theo danh mục:", cats)
+    search_txt = st.text_input("🔍 Tìm kiếm nội dung...")
+
+    if sel_cat != "Tất cả":
+        df_wiki = df_wiki[df_wiki['category'] == sel_cat]
+    if search_txt:
+        df_wiki = df_wiki[df_wiki['title'].str.contains(search_txt, case=False) | df_wiki['content'].str.contains(search_txt, case=False)]
+
+    for i, row in df_wiki.iterrows():
+        with st.container(border=True):
+            c_icon, c_content, c_link = st.columns([0.5, 4, 1])
+            with c_icon: st.markdown("📖")
+            with c_content:
+                st.markdown(f"**{row['title']}**")
+                st.caption(f"📂 {row['category']} | 📝 {row['content']}")
+            with c_link:
+                if row['link']:
+                    st.link_button("Mở Link ↗️", row['link'])
+
 # --- UI MAIN ---
 if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
 if 'uploader_key' not in st.session_state: st.session_state['uploader_key'] = 0
@@ -781,8 +864,8 @@ if not st.session_state['logged_in']:
     c1, c2, c3 = st.columns([1, 1.5, 1])
     with c2:
         with st.container():
-            st.markdown('<div class="login-title">☁️ ĐO ĐẠC CLOUD V3-PRO</div>', unsafe_allow_html=True)
-            st.markdown('<div class="login-subtitle">Hệ thống quản lý hồ sơ chuyên nghiệp (Optimized)</div>', unsafe_allow_html=True)
+            st.markdown('<div class="login-title">☁️ ĐO ĐẠC CLOUD V4-ULTIMATE</div>', unsafe_allow_html=True)
+            st.markdown('<div class="login-subtitle">Hệ thống quản lý hồ sơ chuyên nghiệp</div>', unsafe_allow_html=True)
             
             tab_login, tab_signup = st.tabs(["🔐 Đăng Nhập", "📝 Đăng Ký"])
             with tab_login:
@@ -886,6 +969,9 @@ else:
                 display_df = display_df[display_df['temp_proc'] == filter_proc]
 
             render_optimized_list_view(display_df, user, role, user_list)
+
+    elif sel == "📚 Thư Viện":
+        render_wiki_page(role)
 
     elif sel == "🗄️ Lưu Trữ":
         st.title("🗄️ Kho Lưu Trữ Hồ Sơ")
