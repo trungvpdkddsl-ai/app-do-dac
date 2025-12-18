@@ -118,7 +118,6 @@ def get_progress_bar_html(start_str, deadline_str, status):
         return f"""<div style="width: 100%; background-color: #e9ecef; border-radius: 4px; height: 6px; margin-top: 5px;"><div style="width: {percent}%; background-color: {color}; height: 6px; border-radius: 4px;"></div></div>"""
     except: return ""
 
-# --- [NEW] HÀM XUẤT EXCEL THAY CHO CSV ---
 def generate_excel_download(df):
     export_df = df.copy()
     export_df['Thủ tục'] = export_df['logs'].apply(extract_proc_from_log)
@@ -129,7 +128,6 @@ def generate_excel_download(df):
     final_df.columns = ['Mã HS', 'Loại Thủ Tục', 'Bước Hiện Tại', 'Người Thực Hiện', 'Trạng Thái', 'Tên Khách Hàng', 'SĐT', 'Địa Chỉ', 'Ngày Nhận', 'Hạn Chót', 'Phí Dịch Vụ']
     
     output = io.BytesIO()
-    # Yêu cầu cài đặt: pip install openpyxl
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         final_df.to_excel(writer, index=False, sheet_name='DanhSachHoSo')
     return output.getvalue()
@@ -167,6 +165,12 @@ def get_all_jobs_df_cached():
             if 'is_paid' not in df.columns: df['is_paid'] = 0
             if 'file_link' not in df.columns: df['file_link'] = ""
             if 'start_time' in df.columns: df['start_dt'] = pd.to_datetime(df['start_time'], errors='coerce').dt.date
+            
+            # --- [NEW] CỘT GHI CHÚ ---
+            if 'manager_note' not in df.columns: df['manager_note'] = ""
+            if 'staff_note' not in df.columns: df['staff_note'] = ""
+            # -------------------------
+            
         return df
     except: return pd.DataFrame()
 
@@ -323,7 +327,8 @@ def add_job(n, p, a, proc, f, u, asn):
     log = f"[{now_str}] {u}: Khởi tạo ({proc}) -> 1. Đo đạc{assign_info}{log_file_str}"
     asn_clean = asn.split(" - ")[0] if asn else ""
     
-    sh.append_row([jid, now_str, n, phone_db, a, "1. Đo đạc", "Đang xử lý", asn_clean, dl, link, log, 0, 0, 0, 0])
+    # [UPDATED] Thêm 2 cột trống cho Note vào cuối dòng
+    sh.append_row([jid, now_str, n, phone_db, a, "1. Đo đạc", "Đang xử lý", asn_clean, dl, link, log, 0, 0, 0, 0, "", ""])
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
     
     clear_cache()
@@ -464,6 +469,18 @@ def delete_forever(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r: sh.delete_rows(r); clear_cache(); log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}"); st.toast("Đã xóa vĩnh viễn!")
 
+# --- [NEW] HÀM CẬP NHẬT GHI CHÚ ---
+def update_notes_content(jid, note_type, content, u):
+    sh = get_sheet()
+    r = find_row_index(sh, jid)
+    if r:
+        # Cột 16 (P) = Manager Note, Cột 17 (Q) = Staff Note
+        col_idx = 16 if note_type == 'manager' else 17
+        sh.update_cell(r, col_idx, content)
+        clear_cache()
+        st.toast("Đã lưu nội dung trao đổi!")
+# ----------------------------------
+
 # --- UI COMPONENTS ---
 def change_menu(new_menu):
     st.session_state['menu_selection'] = new_menu
@@ -505,6 +522,30 @@ def render_job_card_content(j, user, role, user_list):
                 new_a = st.text_input("Đ/c", j['address'], key=f"ea_{j['id']}")
                 if st.button("Lưu", key=f"sv_{j['id']}"):
                     update_customer_info(j['id'], new_n, new_p, new_a, user); time.sleep(1); st.rerun()
+
+    # --- [NEW] PHẦN TRAO ĐỔI NỘI BỘ ---
+    with st.expander("💬 Trao đổi nội bộ (Quản lý & Nhân viên)", expanded=True):
+        col_note_m, col_note_s = st.columns(2)
+        
+        # Cột dành cho Quản lý
+        with col_note_m:
+            if role == "Quản lý":
+                new_m_note = st.text_input("📢 Lời nhắn của Quản lý:", value=str(j.get('manager_note', '')), key=f"mn_{j['id']}")
+                if new_m_note != str(j.get('manager_note', '')):
+                    if st.button("Lưu nhắn QL", key=f"btn_mn_{j['id']}", type="primary"):
+                        update_notes_content(j['id'], 'manager', new_m_note, user)
+                        st.rerun()
+            else:
+                st.info(f"📢 **Quản lý nhắn:**\n{j.get('manager_note', '(Chưa có)')}")
+
+        # Cột dành cho Nhân viên
+        with col_note_s:
+            new_s_note = st.text_input("💬 Phản hồi của Nhân viên:", value=str(j.get('staff_note', '')), key=f"sn_{j['id']}")
+            if new_s_note != str(j.get('staff_note', '')):
+                 if st.button("Gửi phản hồi", key=f"btn_sn_{j['id']}"):
+                    update_notes_content(j['id'], 'staff', new_s_note, user)
+                    st.rerun()
+    # ----------------------------------
 
     st.markdown("---")
     if j['status'] == 'Đã xóa':
@@ -687,6 +728,26 @@ def render_optimized_list_view(df, user, role, user_list):
                 st.markdown(f"🏠 {row['address']}")
                 st.markdown(f"🔖 **{proc_name}** | 📞 {clean_phone}")
                 if progress_html: st.markdown(progress_html, unsafe_allow_html=True)
+
+                # --- [NEW] HIỂN THỊ GHI CHÚ NGOÀI LIST ---
+                m_note = str(row.get('manager_note', '')).strip()
+                s_note = str(row.get('staff_note', '')).strip()
+                
+                if m_note:
+                    st.markdown(f"""
+                        <div style="margin-top: 4px; padding: 4px 8px; background-color: #fff3cd; border-left: 3px solid #ffc107; border-radius: 4px; font-size: 13px; color: #856404;">
+                            📢 <b>QL:</b> {m_note}
+                        </div>
+                    """, unsafe_allow_html=True)
+                
+                if s_note:
+                    st.markdown(f"""
+                        <div style="margin-top: 2px; padding: 4px 8px; background-color: #d1e7dd; border-left: 3px solid #198754; border-radius: 4px; font-size: 13px; color: #0f5132; margin-left: 20px;">
+                            💬 <b>NV:</b> {s_note}
+                        </div>
+                    """, unsafe_allow_html=True)
+                # ----------------------------------------
+
             with c3:
                 st.markdown(status_badge, unsafe_allow_html=True)
                 assignee = row['assigned_to'].split(' - ')[0] if row['assigned_to'] else "Chưa giao"
@@ -694,8 +755,8 @@ def render_optimized_list_view(df, user, role, user_list):
             with c4:
                 expand_key = f"exp_{row['id']}"
                 if st.button("👁️", key=f"btn_{row['id']}", help="Xem chi tiết"):
-                     st.session_state[expand_key] = not st.session_state.get(expand_key, False)
-                     st.rerun()
+                      st.session_state[expand_key] = not st.session_state.get(expand_key, False)
+                      st.rerun()
 
             if st.session_state.get(f"exp_{row['id']}", False):
                 st.markdown("---")
@@ -755,7 +816,6 @@ else:
     with st.sidebar:
         st.title(f"👤 {user}"); st.info(f"{role}")
         
-        # [NEW FUNCTION] Nút làm mới dữ liệu thủ công
         if st.button("🔄 Làm mới dữ liệu", use_container_width=True):
             clear_cache()
             st.toast("Dữ liệu đã được cập nhật!")
@@ -950,7 +1010,6 @@ else:
                 if status_filter == "Chỉ hồ sơ đang làm (Loại bỏ Hoàn thành/Kết thúc)": 
                     filtered_export = filtered_export[~filtered_export['status'].isin(['Hoàn thành', 'Kết thúc sớm'])]
                 
-                # [MODIFIED] XUẤT EXCEL THAY VÌ CSV
                 excel_data = generate_excel_download(filtered_export)
                 st.download_button(
                     label=f"📥 Tải xuống Excel (.xlsx) - {len(filtered_export)} hồ sơ", 
