@@ -11,10 +11,37 @@ import base64
 import calendar
 import io
 import urllib.parse
+import cv2  # Thư viện xử lý ảnh
+import numpy as np # Thư viện toán học cho ảnh
+from PIL import Image # Thư viện xử lý ảnh PIL
 from google.oauth2.service_account import Credentials
+from streamlit.runtime.scriptrunner import add_script_run_ctx
+
+# --- 0. TÍNH NĂNG CHỐNG NGỦ (ANTI-SLEEP MECHANISM) ---
+def keep_session_alive():
+    """
+    Hàm này chèn một đoạn JavaScript ẩn vào trang web.
+    Nó sẽ gửi ping đến server mỗi 30 giây để báo rằng "Người dùng vẫn đang hoạt động",
+    ngăn Streamlit hiện màn hình Zzzz khi bạn để treo tab.
+    """
+    st.markdown(
+        """
+        <script>
+        var id = window.setInterval(function(){
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", "/_stcore/health");
+            xhr.send();
+        }, 30000);
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 st.set_page_config(page_title="Đo Đạc Cloud V4-Ult", page_icon="☁️", layout="wide")
+
+# Kích hoạt chống ngủ ngay khi app chạy
+keep_session_alive()
 
 TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
 TELEGRAM_CHAT_ID = "-5055192262"
@@ -147,6 +174,86 @@ def get_status_badge_html(row):
 def inject_custom_css():
     st.markdown("""<style>.compact-btn button { padding: 0px 8px !important; min-height: 28px !important; height: 28px !important; font-size: 12px !important; margin-top: 0px !important; } div[data-testid="stExpanderDetails"] { padding-top: 10px !important; } .small-btn button { height: 32px; padding-top: 0px !important; padding-bottom: 0px !important; }</style>""", unsafe_allow_html=True)
 
+# --- [MỚI] HÀM XỬ LÝ ẢNH IN CCCD (Sử dụng OpenCV & Pillow) ---
+def order_points(pts):
+    rect = np.zeros((4, 2), dtype="float32")
+    s = pts.sum(axis=1)
+    rect[0] = pts[np.argmin(s)]
+    rect[2] = pts[np.argmax(s)]
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]
+    rect[3] = pts[np.argmax(diff)]
+    return rect
+
+def four_point_transform(image, pts):
+    rect = order_points(pts)
+    (tl, tr, br, bl) = rect
+    widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+    widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+    maxWidth = max(int(widthA), int(widthB))
+    heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+    heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+    maxHeight = max(int(heightA), int(heightB))
+    dst = np.array([[0, 0], [maxWidth - 1, 0], [maxWidth - 1, maxHeight - 1], [0, maxHeight - 1]], dtype="float32")
+    M = cv2.getPerspectiveTransform(rect, dst)
+    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+    return warped
+
+def auto_crop_card(image_bytes):
+    # Đọc ảnh từ bytes
+    file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
+    image = cv2.imdecode(file_bytes, 1)
+    orig = image.copy()
+    
+    # Xử lý tìm biên
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    edged = cv2.Canny(blur, 75, 200)
+    
+    # Tìm contours
+    cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
+    
+    screenCnt = None
+    for c in cnts:
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+        if len(approx) == 4:
+            screenCnt = approx
+            break
+            
+    # Cắt ảnh nếu tìm thấy khung
+    if screenCnt is not None:
+        warped = four_point_transform(orig, screenCnt.reshape(4, 2))
+    else:
+        warped = orig
+
+    # Chuyển sang PIL
+    warped_rgb = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(warped_rgb)
+
+def create_a4_print_layout(front_bytes, back_bytes):
+    A4_W, A4_H = 2480, 3508 # 300 DPI
+    ID_W, ID_H = 1011, 638  # Kích thước CCCD chuẩn
+    
+    try:
+        img_f = auto_crop_card(front_bytes)
+        img_b = auto_crop_card(back_bytes)
+        
+        img_f = img_f.resize((ID_W, ID_H), Image.Resampling.LANCZOS)
+        img_b = img_b.resize((ID_W, ID_H), Image.Resampling.LANCZOS)
+        
+        canvas = Image.new('RGB', (A4_W, A4_H), 'white')
+        
+        start_x = (A4_W - ID_W) // 2
+        start_y = (A4_H - (ID_H * 2 + 150)) // 2 
+        
+        canvas.paste(img_f, (start_x, start_y))
+        canvas.paste(img_b, (start_x, start_y + ID_H + 150))
+        return canvas
+    except Exception as e:
+        return None
+
 # --- [NEW] HÀM CHO WIKI & CALENDAR ---
 def create_google_cal_link(title, deadline_str, location, description):
     try:
@@ -155,7 +262,6 @@ def create_google_cal_link(title, deadline_str, location, description):
         start_time = dt.strftime('%Y%m%dT%H%M00')
         end_time = (dt + timedelta(hours=1)).strftime('%Y%m%dT%H%M00')
         base_url = "https://calendar.google.com/calendar/render?action=TEMPLATE"
-        # Encode URL parameters
         safe_title = urllib.parse.quote(title)
         safe_desc = urllib.parse.quote(description)
         safe_loc = urllib.parse.quote(location)
@@ -179,10 +285,8 @@ def get_all_jobs_df_cached():
             if 'is_paid' not in df.columns: df['is_paid'] = 0
             if 'file_link' not in df.columns: df['file_link'] = ""
             if 'start_time' in df.columns: df['start_dt'] = pd.to_datetime(df['start_time'], errors='coerce').dt.date
-            # --- CỘT GHI CHÚ ---
             if 'manager_note' not in df.columns: df['manager_note'] = ""
             if 'staff_note' not in df.columns: df['staff_note'] = ""
-            # -------------------
         return df
     except: return pd.DataFrame()
 
@@ -191,7 +295,6 @@ def get_all_jobs_df(): return get_all_jobs_df_cached()
 def clear_cache():
     get_all_jobs_df_cached.clear()
     get_all_users_cached.clear()
-    # Nếu cache wiki có thể clear ở đây nhưng để riêng cho nhẹ
 
 def get_sheet(sheet_name="DB_DODAC"):
     try: creds = get_gcp_creds(); client = gspread.authorize(creds); return client.open(sheet_name).sheet1
@@ -295,10 +398,16 @@ def get_daily_sequence_id():
     else: max_seq = max([int(jid[-2:]) for jid in today_ids]); seq = max_seq + 1
     return int(f"{prefix}{seq:02}"), f"{seq:02}"
 
-# --- SCHEDULER ---
+# --- SCHEDULER & AUTO-WAKE BACKGROUND THREAD ---
 def run_schedule_check():
     while True:
         now = datetime.now()
+        # 1. Cơ chế giữ kết nối Server (Internal Ping)
+        # In nhẹ vào log để server thấy có activity
+        if now.minute % 10 == 0:
+            print(f"[{now}] System Keep-Alive Heartbeat...")
+
+        # 2. Logic thông báo Telegram cũ
         if (now.hour == 8 or now.hour == 13) and now.minute < 5:
             try:
                 creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC").sheet1
@@ -321,7 +430,10 @@ def run_schedule_check():
         time.sleep(60)
 
 if 'scheduler_started' not in st.session_state:
-    threading.Thread(target=run_schedule_check, daemon=True).start()
+    # Chạy thread này để kiểm tra lịch và giữ app không bị freeze hoàn toàn ở backend
+    t = threading.Thread(target=run_schedule_check, daemon=True)
+    add_script_run_ctx(t) # Đảm bảo thread chạy đúng context của Streamlit
+    t.start()
     st.session_state['scheduler_started'] = True
 
 # --- LOGIC ADD/UPDATE (ĐÃ CÓ clear_cache) ---
@@ -344,7 +456,6 @@ def add_job(n, p, a, proc, f, u, asn):
     log = f"[{now_str}] {u}: Khởi tạo ({proc}) -> 1. Đo đạc{assign_info}{log_file_str}"
     asn_clean = asn.split(" - ")[0] if asn else ""
     
-    # [IMPORTANT] Cập nhật thêm 2 cột Note trống vào cuối (Total 17 columns)
     sh.append_row([jid, now_str, n, phone_db, a, "1. Đo đạc", "Đang xử lý", asn_clean, dl, link, log, 0, 0, 0, 0, "", ""])
     log_to_audit(u, "CREATE_JOB", f"ID: {jid}, Name: {n}")
     
@@ -486,12 +597,10 @@ def delete_forever(jid, u):
     sh = get_sheet(); r = find_row_index(sh, jid)
     if r: sh.delete_rows(r); clear_cache(); log_to_audit(u, "DELETE_FOREVER", f"ID: {jid}"); st.toast("Đã xóa vĩnh viễn!")
 
-# --- [NEW] HÀM CẬP NHẬT GHI CHÚ ---
 def update_notes_content(jid, note_type, content, u):
     sh = get_sheet()
     r = find_row_index(sh, jid)
     if r:
-        # Cột 16 (P) = Manager Note, Cột 17 (Q) = Staff Note
         col_idx = 16 if note_type == 'manager' else 17
         sh.update_cell(r, col_idx, content)
         clear_cache()
@@ -511,6 +620,7 @@ def render_square_menu(role):
              st.button("💰 Công Nợ", on_click=change_menu, args=("💰 Công Nợ",))
              st.button("🗑️ Thùng Rác", on_click=change_menu, args=("🗑️ Thùng Rác",))
     with c2:
+        st.button("🖨️ In CCCD", on_click=change_menu, args=("🖨️ In CCCD",)) # <--- NÚT MỚI
         st.button("📅 Lịch Biểu", on_click=change_menu, args=("📅 Lịch Biểu",))
         st.button("📚 Thư Viện", on_click=change_menu, args=("📚 Thư Viện",))
         st.button("🗄️ Lưu Trữ", on_click=change_menu, args=("🗄️ Lưu Trữ",)) 
@@ -540,7 +650,7 @@ def render_job_card_content(j, user, role, user_list):
                 if st.button("Lưu", key=f"sv_{j['id']}"):
                     update_customer_info(j['id'], new_n, new_p, new_a, user); time.sleep(1); st.rerun()
 
-    # --- [NEW] PHẦN TRAO ĐỔI NỘI BỘ ---
+    # --- PHẦN TRAO ĐỔI NỘI BỘ ---
     with st.expander("💬 Trao đổi nội bộ (Quản lý & Nhân viên)", expanded=True):
         col_note_m, col_note_s = st.columns(2)
         
@@ -623,7 +733,6 @@ def render_job_card_content(j, user, role, user_list):
             if c_b.button("Lưu hẹn", key=f"s7_{j['id']}"):
                  update_deadline_custom(j['id'], new_date, user); st.rerun()
             
-            # --- [NEW] NÚT THÊM VÀO LỊCH GOOGLE ---
             cal_link = create_google_cal_link(
                 title=f"Trả hồ sơ: {j['customer_name']}",
                 deadline_str=j['deadline'],
@@ -638,7 +747,6 @@ def render_job_card_content(j, user, role, user_list):
                         </button>
                     </a>
                 """, unsafe_allow_html=True)
-            # --------------------------------------
             
             st.divider()
             st.write("🏁 **Xác nhận kết quả:**")
@@ -764,7 +872,6 @@ def render_optimized_list_view(df, user, role, user_list):
                 st.markdown(f"🔖 **{proc_name}** | 📞 {clean_phone}")
                 if progress_html: st.markdown(progress_html, unsafe_allow_html=True)
 
-                # --- [NEW] HIỂN THỊ GHI CHÚ NGOÀI LIST ---
                 m_note = str(row.get('manager_note', '')).strip()
                 s_note = str(row.get('staff_note', '')).strip()
                 
@@ -781,7 +888,6 @@ def render_optimized_list_view(df, user, role, user_list):
                             💬 <b>NV:</b> {s_note}
                         </div>
                     """, unsafe_allow_html=True)
-                # ----------------------------------------
 
             with c3:
                 st.markdown(status_badge, unsafe_allow_html=True)
@@ -797,17 +903,15 @@ def render_optimized_list_view(df, user, role, user_list):
                 st.markdown("---")
                 render_job_card_content(row, user, role, user_list)
 
-# --- [NEW] GIAO DIỆN WIKI ---
+# --- GIAO DIỆN WIKI ---
 def render_wiki_page(role):
     st.title("📚 Thư Viện Kiến Thức & Biểu Mẫu")
     sh = get_wiki_sheet()
     if not sh: st.error("⚠️ Không tìm thấy Sheet 'WIKI'. Vui lòng tạo Sheet này trên Google Spreadsheet."); return
 
-    # Lấy dữ liệu
     data = sh.get_all_records()
     df_wiki = pd.DataFrame(data)
 
-    # Phần dành cho Quản lý: Thêm bài viết mới
     if role == "Quản lý":
         with st.expander("➕ Thêm tài liệu mới (Admin)", expanded=False):
             with st.form("add_wiki"):
@@ -824,7 +928,6 @@ def render_wiki_page(role):
         st.info("Chưa có tài liệu nào.")
         return
 
-    # Giao diện Tìm kiếm & Hiển thị
     cats = ["Tất cả"] + sorted(list(set(df_wiki['category'].tolist())))
     sel_cat = st.selectbox("📂 Lọc theo danh mục:", cats)
     search_txt = st.text_input("🔍 Tìm kiếm nội dung...")
@@ -969,6 +1072,32 @@ else:
                 display_df = display_df[display_df['temp_proc'] == filter_proc]
 
             render_optimized_list_view(display_df, user, role, user_list)
+
+    elif sel == "🖨️ In CCCD":
+        st.title("🖨️ Tiện Ích In CCCD")
+        st.info("Hệ thống sẽ tự động phát hiện viền thẻ, cắt bỏ nền thừa và ghép 2 mặt vào khổ A4 để in.")
+        
+        c1, c2 = st.columns(2)
+        f_front = c1.file_uploader("Mặt trước", type=['jpg', 'png', 'jpeg'], key="cccd_f")
+        f_back = c2.file_uploader("Mặt sau", type=['jpg', 'png', 'jpeg'], key="cccd_b")
+        
+        if f_front and f_back:
+            if st.button("🚀 Xử lý & Tạo file in", type="primary"):
+                with st.spinner("Đang xử lý hình ảnh..."):
+                    f_front.seek(0); f_back.seek(0)
+                    result_img = create_a4_print_layout(f_front, f_back)
+                    
+                    if result_img:
+                        st.success("Xử lý thành công!")
+                        st.image(result_img, caption="Kết quả xem trước", width=300)
+                        
+                        buf = io.BytesIO()
+                        result_img.save(buf, format="JPEG", quality=100)
+                        byte_im = buf.getvalue()
+                        
+                        st.download_button(label="⬇️ Tải file ảnh A4 (JPG)", data=byte_im, file_name="CCCD_Print_A4.jpg", mime="image/jpeg", use_container_width=True)
+                    else:
+                        st.error("Có lỗi xảy ra. Vui lòng đảm bảo ảnh chụp rõ nét và đủ sáng.")
 
     elif sel == "📚 Thư Viện":
         render_wiki_page(role)
