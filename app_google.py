@@ -12,17 +12,15 @@ import calendar
 import io
 import urllib.parse
 import cv2  # Thư viện xử lý ảnh
-import numpy as np # Thư viện toán học cho ảnh
+import numpy as np # Thư viện toán học
 from PIL import Image # Thư viện xử lý ảnh PIL
 from google.oauth2.service_account import Credentials
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
-# --- 0. TÍNH NĂNG CHỐNG NGỦ (ANTI-SLEEP MECHANISM) ---
+# --- 0. TÍNH NĂNG CHỐNG NGỦ (ANTI-SLEEP) ---
 def keep_session_alive():
     """
-    Hàm này chèn một đoạn JavaScript ẩn vào trang web.
-    Nó sẽ gửi ping đến server mỗi 30 giây để báo rằng "Người dùng vẫn đang hoạt động",
-    ngăn Streamlit hiện màn hình Zzzz khi bạn để treo tab.
+    Gửi tín hiệu 'heartbeat' để giữ tab không bị đóng băng (Zzzz).
     """
     st.markdown(
         """
@@ -40,7 +38,7 @@ def keep_session_alive():
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 st.set_page_config(page_title="Đo Đạc Cloud V4-Ult", page_icon="☁️", layout="wide")
 
-# Kích hoạt chống ngủ ngay khi app chạy
+# Kích hoạt chống ngủ
 keep_session_alive()
 
 TELEGRAM_TOKEN = "8514665869:AAHUfTHgNlEEK_Yz6yYjZa-1iR645Cgr190"
@@ -174,8 +172,9 @@ def get_status_badge_html(row):
 def inject_custom_css():
     st.markdown("""<style>.compact-btn button { padding: 0px 8px !important; min-height: 28px !important; height: 28px !important; font-size: 12px !important; margin-top: 0px !important; } div[data-testid="stExpanderDetails"] { padding-top: 10px !important; } .small-btn button { height: 32px; padding-top: 0px !important; padding-bottom: 0px !important; }</style>""", unsafe_allow_html=True)
 
-# --- [MỚI] HÀM XỬ LÝ ẢNH IN CCCD (Sử dụng OpenCV & Pillow) ---
+# --- [CẬP NHẬT] HÀM XỬ LÝ ẢNH CCCD (SẮC NÉT & CÓ PADDING) ---
 def order_points(pts):
+    # Sắp xếp 4 điểm: trên-trái, trên-phải, dưới-phải, dưới-trái
     rect = np.zeros((4, 2), dtype="float32")
     s = pts.sum(axis=1)
     rect[0] = pts[np.argmin(s)]
@@ -185,32 +184,62 @@ def order_points(pts):
     rect[3] = pts[np.argmax(diff)]
     return rect
 
-def four_point_transform(image, pts):
+def four_point_transform(image, pts, padding_px=20):
+    """
+    Cắt ảnh với padding (vùng đệm) màu trắng để không bị lẹm vào nội dung.
+    padding_px: Số pixel mở rộng ra mỗi cạnh.
+    """
     rect = order_points(pts)
     (tl, tr, br, bl) = rect
+
+    # Tính chiều rộng/cao
     widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
     widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
     maxWidth = max(int(widthA), int(widthB))
+
     heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
     heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
     maxHeight = max(int(heightA), int(heightB))
-    dst = np.array([[0, 0], [maxWidth - 1, 0], [maxWidth - 1, maxHeight - 1], [0, maxHeight - 1]], dtype="float32")
+
+    # Tọa độ đích: Dịch vào trong một khoảng = padding_px
+    dst = np.array([
+        [padding_px, padding_px],
+        [maxWidth - 1 + padding_px, padding_px],
+        [maxWidth - 1 + padding_px, maxHeight - 1 + padding_px],
+        [padding_px, maxHeight - 1 + padding_px]
+    ], dtype="float32")
+
+    # Kích thước ảnh đầu ra bao gồm cả padding
+    output_size = (maxWidth + 2 * padding_px, maxHeight + 2 * padding_px)
+    
     M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+    # Tô viền màu trắng (255, 255, 255)
+    warped = cv2.warpPerspective(image, M, output_size, borderValue=(255, 255, 255))
     return warped
 
-def auto_crop_card(image_bytes):
-    # Đọc ảnh từ bytes
+def enhance_sharpness(image_cv):
+    """
+    Làm nét ảnh bằng kernel sharpening.
+    """
+    # Kernel làm nét (trung tâm dương mạnh, xung quanh âm)
+    kernel = np.array([[0, -1, 0],
+                       [-1, 5,-1],
+                       [0, -1, 0]])
+    sharpened = cv2.filter2D(image_cv, -1, kernel)
+    return sharpened
+
+def auto_crop_and_enhance_card(image_bytes):
+    # 1. Đọc ảnh
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
     image = cv2.imdecode(file_bytes, 1)
     orig = image.copy()
     
-    # Xử lý tìm biên
+    # 2. Tìm biên
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     edged = cv2.Canny(blur, 75, 200)
     
-    # Tìm contours
+    # 3. Tìm contour
     cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
     
@@ -222,34 +251,48 @@ def auto_crop_card(image_bytes):
             screenCnt = approx
             break
             
-    # Cắt ảnh nếu tìm thấy khung
+    # 4. Cắt (có padding)
     if screenCnt is not None:
-        warped = four_point_transform(orig, screenCnt.reshape(4, 2))
+        warped = four_point_transform(orig, screenCnt.reshape(4, 2), padding_px=20)
     else:
         warped = orig
 
-    # Chuyển sang PIL
-    warped_rgb = cv2.cvtColor(warped, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(warped_rgb)
+    # 5. Làm nét
+    sharpened_warped = enhance_sharpness(warped)
+
+    # 6. Chuyển sang PIL
+    final_rgb = cv2.cvtColor(sharpened_warped, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(final_rgb)
 
 def create_a4_print_layout(front_bytes, back_bytes):
-    A4_W, A4_H = 2480, 3508 # 300 DPI
-    ID_W, ID_H = 1011, 638  # Kích thước CCCD chuẩn
+    # Kích thước A4 @ 300 DPI
+    A4_W, A4_H = 2480, 3508 
+    # Kích thước CCCD (85.6mm x 53.98mm)
+    ID_W_MM, ID_H_MM = 85.6, 53.98
+    PIXELS_PER_MM = 300 / 25.4 # ~11.81
+    
+    TARGET_W = int(ID_W_MM * PIXELS_PER_MM)
+    TARGET_H = int(ID_H_MM * PIXELS_PER_MM)
     
     try:
-        img_f = auto_crop_card(front_bytes)
-        img_b = auto_crop_card(back_bytes)
+        img_f = auto_crop_and_enhance_card(front_bytes)
+        img_b = auto_crop_and_enhance_card(back_bytes)
         
-        img_f = img_f.resize((ID_W, ID_H), Image.Resampling.LANCZOS)
-        img_b = img_b.resize((ID_W, ID_H), Image.Resampling.LANCZOS)
+        # Resize về đúng kích thước chuẩn (dùng LANCZOS cho nét)
+        img_f = img_f.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+        img_b = img_b.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
         
         canvas = Image.new('RGB', (A4_W, A4_H), 'white')
         
-        start_x = (A4_W - ID_W) // 2
-        start_y = (A4_H - (ID_H * 2 + 150)) // 2 
+        start_x = (A4_W - TARGET_W) // 2
+        # Khoảng cách giữa 2 thẻ: 50mm (~5cm)
+        gap_y = int(50 * PIXELS_PER_MM) 
+        total_content_h = TARGET_H * 2 + gap_y
+        start_y = (A4_H - total_content_h) // 2 
         
         canvas.paste(img_f, (start_x, start_y))
-        canvas.paste(img_b, (start_x, start_y + ID_H + 150))
+        canvas.paste(img_b, (start_x, start_y + TARGET_H + gap_y))
+        
         return canvas
     except Exception as e:
         return None
@@ -403,7 +446,6 @@ def run_schedule_check():
     while True:
         now = datetime.now()
         # 1. Cơ chế giữ kết nối Server (Internal Ping)
-        # In nhẹ vào log để server thấy có activity
         if now.minute % 10 == 0:
             print(f"[{now}] System Keep-Alive Heartbeat...")
 
@@ -620,7 +662,7 @@ def render_square_menu(role):
              st.button("💰 Công Nợ", on_click=change_menu, args=("💰 Công Nợ",))
              st.button("🗑️ Thùng Rác", on_click=change_menu, args=("🗑️ Thùng Rác",))
     with c2:
-        st.button("🖨️ In CCCD", on_click=change_menu, args=("🖨️ In CCCD",)) # <--- NÚT MỚI
+        st.button("🖨️ In CCCD", on_click=change_menu, args=("🖨️ In CCCD",)) 
         st.button("📅 Lịch Biểu", on_click=change_menu, args=("📅 Lịch Biểu",))
         st.button("📚 Thư Viện", on_click=change_menu, args=("📚 Thư Viện",))
         st.button("🗄️ Lưu Trữ", on_click=change_menu, args=("🗄️ Lưu Trữ",)) 
