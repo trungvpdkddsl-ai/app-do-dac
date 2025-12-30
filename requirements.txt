@@ -3,6 +3,6 @@ pandas
 gspread
 google-auth
 opencv-python-headless
-numpy
 Pillow
 requests
+openpyxl
