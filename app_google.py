@@ -13,16 +13,13 @@ import io
 import urllib.parse
 import cv2  # Thư viện xử lý ảnh
 import numpy as np # Thư viện toán học
-import html # [QUAN TRỌNG] Thư viện để xử lý ký tự đặc biệt trong chat
+import html # Thư viện xử lý HTML an toàn cho Chat
 from PIL import Image # Thư viện xử lý ảnh PIL
 from google.oauth2.service_account import Credentials
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 # --- 0. TÍNH NĂNG CHỐNG NGỦ (ANTI-SLEEP) ---
 def keep_session_alive():
-    """
-    Gửi tín hiệu 'heartbeat' để giữ tab không bị đóng băng (Zzzz).
-    """
     st.markdown(
         """
         <script>
@@ -152,6 +149,7 @@ def generate_excel_download(df):
     final_df = export_df[['id', 'Thủ tục', 'current_stage', 'assigned_to', 'status', 'customer_name', 'SĐT', 'address', 'start_time', 'deadline', 'survey_fee']]
     final_df.columns = ['Mã HS', 'Loại Thủ Tục', 'Bước Hiện Tại', 'Người Thực Hiện', 'Trạng Thái', 'Tên Khách Hàng', 'SĐT', 'Địa Chỉ', 'Ngày Nhận', 'Hạn Chót', 'Phí Dịch Vụ']
     output = io.BytesIO()
+    # SỬ DỤNG OPENPYXL ĐỂ TRÁNH LỖI EXCEL
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         final_df.to_excel(writer, index=False, sheet_name='DanhSachHoSo')
     return output.getvalue()
@@ -750,13 +748,14 @@ def render_job_card_content(j, user, role, user_list):
             content = msg['message']
             sender_role = role_map.get(sender_name, "N/V") 
             time_sent = pd.to_datetime(msg['timestamp']).strftime('%H:%M %d/%m')
+            
             display_name = f"{sender_name} ({sender_role})"
             
-            # Xử lý nội dung an toàn để tránh lỗi HTML
+            # QUAN TRỌNG: Không thụt đầu dòng trong chuỗi HTML để tránh lỗi Markdown code block
+            # Đã thêm html.escape để xử lý ký tự đặc biệt
             safe_content = html.escape(str(content))
-
-            # DÙNG NHÁY ĐƠN VÀ KHÔNG THỤT DÒNG TRONG CHUỖI HTML
-            if sender_name == user:
+            
+            if sender_name == user: 
                 chat_html += f'<div class="chat-meta sender-meta" style="margin-top:5px;">{time_sent}</div><div class="chat-bubble chat-sender" title="{display_name}">{safe_content}</div>'
             else:
                 chat_html += f'<div class="chat-meta receiver-meta" style="margin-top:5px;"><b>{display_name}</b> - {time_sent}</div><div class="chat-bubble chat-receiver">{safe_content}</div>'
