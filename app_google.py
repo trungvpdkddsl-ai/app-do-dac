@@ -358,7 +358,7 @@ def get_wiki_sheet():
     try: creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC"); return sh.worksheet("WIKI")
     except: return None
 
-# --- [NEW] CÁC HÀM XỬ LÝ CHAT ---
+# --- [NEW] CÁC HÀM XỬ LÝ CHAT (LƯU LỊCH SỬ) ---
 def get_chat_sheet():
     try: creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC"); return sh.worksheet("CHAT_LOGS")
     except: return None
@@ -366,13 +366,18 @@ def get_chat_sheet():
 def get_chat_history(job_id):
     try:
         sh = get_chat_sheet()
-        # Lấy toàn bộ dữ liệu chat (khuyên dùng filter query nếu dữ liệu quá lớn trong tương lai)
+        # Lấy toàn bộ dữ liệu chat
         all_chats = sh.get_all_records()
         df_chat = pd.DataFrame(all_chats)
         if df_chat.empty: return []
-        # Lọc theo Job ID
-        job_chats = df_chat[df_chat['job_id'].astype(str) == str(job_id)]
-        # Sắp xếp theo thời gian
+        
+        # Đảm bảo cột job_id là string để so sánh
+        df_chat['job_id'] = df_chat['job_id'].astype(str)
+        
+        # Lọc theo Job ID hiện tại
+        job_chats = df_chat[df_chat['job_id'] == str(job_id)]
+        
+        # Sắp xếp theo thời gian (cũ nhất ở trên)
         job_chats = job_chats.sort_values(by='timestamp')
         return job_chats.to_dict('records')
     except: return []
@@ -381,7 +386,7 @@ def send_chat_message(job_id, sender, message):
     try:
         sh = get_chat_sheet()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # Thêm dòng mới: job_id, time, người gửi, tin nhắn
+        # QUAN TRỌNG: Dùng append_row để thêm dòng mới chứ không ghi đè
         sh.append_row([str(job_id), now_str, sender, message])
         return True
     except: return False
@@ -702,19 +707,19 @@ def render_square_menu(role):
             st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
             st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
 
-# --- RENDER CARD CONTENT (ĐÃ UPDATE CHAT: HIỆN CHỨC VỤ + SỬA LỖI GỬI) ---
+# --- RENDER CARD CONTENT (ĐÃ SỬA LỖI MẤT TIN NHẮN & HIỆN ROLE) ---
 def render_job_card_content(j, user, role, user_list):
     try: dl_dt = pd.to_datetime(j['deadline'])
     except: dl_dt = datetime.now() + timedelta(days=365)
     proc_name = extract_proc_from_log(j['logs'])
 
-    # --- LẤY THÔNG TIN CHỨC VỤ ĐỂ HIỂN THỊ CHAT ---
+    # --- LẤY THÔNG TIN CHỨC VỤ ĐỂ HIỂN THỊ TRONG CHAT ---
     df_users = get_all_users_cached()
     role_map = {}
     if not df_users.empty:
         role_map = dict(zip(df_users['username'], df_users['role']))
 
-    # THÔNG TIN KHÁCH HÀNG
+    # THÔNG TIN KHÁCH HÀNG (Giữ nguyên)
     c_info1, c_info2 = st.columns([1, 1])
     with c_info1:
         st.markdown(f"👤 **{j['customer_name']}**")
@@ -729,57 +734,65 @@ def render_job_card_content(j, user, role, user_list):
                 if st.button("Lưu", key=f"sv_{j['id']}"):
                     update_customer_info(j['id'], new_n, new_p, new_a, user); time.sleep(1); st.rerun()
 
-    # --- PHẦN CHAT MỚI (FIX LỖI & HIỆN ROLE) ---
+    # --- PHẦN CHAT MỚI (LƯU LỊCH SỬ - KHÔNG MẤT TIN CŨ) ---
     st.markdown("---")
-    with st.expander("💬 Trao đổi / Ghi chú (Chat)", expanded=True):
+    with st.expander("💬 Trao đổi / Ghi chú (Chat History)", expanded=True):
+        # 1. Tải lịch sử chat từ Sheet CHAT_LOGS
         chat_history = get_chat_history(j['id'])
         
+        # Khung hiển thị chat
         chat_html = '<div class="chat-container">'
+        
+        if not chat_history:
+            chat_html += '<div style="text-align:center; color:#888; font-size:12px;"><i>Chưa có tin nhắn nào.</i></div>'
+        
         for msg in chat_history:
             sender_name = msg['sender']
             content = msg['message']
             sender_role = role_map.get(sender_name, "N/V") 
             time_sent = pd.to_datetime(msg['timestamp']).strftime('%H:%M %d/%m')
             
+            # Hiển thị tên kèm chức vụ
             display_name = f"{sender_name} ({sender_role})"
             
-            if sender_name == user: # Tin nhắn của mình
+            if sender_name == user: # Tin nhắn của mình (Màu tím, bên phải)
                 chat_html += f"""
                 <div class="chat-meta sender-meta" style="margin-top:5px;">{time_sent}</div>
                 <div class="chat-bubble chat-sender" title="{display_name}">
                     {content}
                 </div>
                 """
-            else: # Tin nhắn người khác
+            else: # Tin nhắn người khác (Màu xám, bên trái)
                 chat_html += f"""
                 <div class="chat-meta receiver-meta" style="margin-top:5px;"><b>{display_name}</b> - {time_sent}</div>
                 <div class="chat-bubble chat-receiver">
                     {content}
                 </div>
                 """
-
         chat_html += '</div>'
         st.markdown(chat_html, unsafe_allow_html=True)
 
-        # 2. Ô nhập tin nhắn
+        # 2. Form nhập tin nhắn mới
+        # Sử dụng form để khi Enter sẽ gửi và reset ô nhập
         with st.form(key=f"chat_form_{j['id']}", clear_on_submit=True):
             col_input, col_btn = st.columns([4, 1])
             with col_input:
-                user_msg = st.text_input("Nhập tin nhắn...", placeholder="Nhập nội dung...", label_visibility="collapsed")
+                user_msg = st.text_input("Nhập tin nhắn...", placeholder="Nhập nội dung trao đổi...", label_visibility="collapsed")
             with col_btn:
                 submitted = st.form_submit_button("Gửi ➢", type="primary", use_container_width=True)
             
             if submitted:
                 if user_msg and user_msg.strip() != "":
+                    # Gửi tin vào Sheet CHAT_LOGS
                     if send_chat_message(j['id'], user, user_msg):
-                        st.toast("Đã gửi!")
-                        time.sleep(1.0) 
-                        st.rerun()
+                        st.toast("✅ Đã gửi!")
+                        time.sleep(1.0) # Đợi 1s để Google Sheet kịp lưu
+                        st.rerun() # Tải lại trang để hiện tin vừa gửi
                 else:
                     st.warning("Vui lòng nhập nội dung!")
 
     # ----------------------------------
-
+    # (Phần bên dưới giữ nguyên code cũ của bạn)
     st.markdown("---")
     if j['status'] == 'Đã xóa':
         st.warning("⚠️ Hồ sơ này đang ở trong Thùng Rác.")
