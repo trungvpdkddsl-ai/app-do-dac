@@ -702,11 +702,17 @@ def render_square_menu(role):
             st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
             st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
 
-# --- RENDER CARD CONTENT (FORM CHI TIẾT ĐÃ CÓ CHAT) ---
+# --- RENDER CARD CONTENT (ĐÃ UPDATE CHAT: HIỆN CHỨC VỤ + SỬA LỖI GỬI) ---
 def render_job_card_content(j, user, role, user_list):
     try: dl_dt = pd.to_datetime(j['deadline'])
     except: dl_dt = datetime.now() + timedelta(days=365)
     proc_name = extract_proc_from_log(j['logs'])
+
+    # --- LẤY THÔNG TIN CHỨC VỤ ĐỂ HIỂN THỊ CHAT ---
+    df_users = get_all_users_cached()
+    role_map = {}
+    if not df_users.empty:
+        role_map = dict(zip(df_users['username'], df_users['role']))
 
     # THÔNG TIN KHÁCH HÀNG
     c_info1, c_info2 = st.columns([1, 1])
@@ -723,33 +729,35 @@ def render_job_card_content(j, user, role, user_list):
                 if st.button("Lưu", key=f"sv_{j['id']}"):
                     update_customer_info(j['id'], new_n, new_p, new_a, user); time.sleep(1); st.rerun()
 
-    # --- PHẦN CHAT MỚI (LƯU LỊCH SỬ) ---
+    # --- PHẦN CHAT MỚI (FIX LỖI & HIỆN ROLE) ---
     st.markdown("---")
     with st.expander("💬 Trao đổi / Ghi chú (Chat)", expanded=True):
-        # 1. Hiển thị lịch sử chat
         chat_history = get_chat_history(j['id'])
         
-        # Container cuộn cho chat
         chat_html = '<div class="chat-container">'
         for msg in chat_history:
             sender_name = msg['sender']
             content = msg['message']
+            sender_role = role_map.get(sender_name, "N/V") 
             time_sent = pd.to_datetime(msg['timestamp']).strftime('%H:%M %d/%m')
+            
+            display_name = f"{sender_name} ({sender_role})"
             
             if sender_name == user: # Tin nhắn của mình
                 chat_html += f"""
-                <div class="chat-meta sender-meta">{time_sent}</div>
-                <div class="chat-bubble chat-sender">
+                <div class="chat-meta sender-meta" style="margin-top:5px;">{time_sent}</div>
+                <div class="chat-bubble chat-sender" title="{display_name}">
                     {content}
                 </div>
                 """
             else: # Tin nhắn người khác
                 chat_html += f"""
-                <div class="chat-meta receiver-meta"><b>{sender_name}</b> - {time_sent}</div>
+                <div class="chat-meta receiver-meta" style="margin-top:5px;"><b>{display_name}</b> - {time_sent}</div>
                 <div class="chat-bubble chat-receiver">
                     {content}
                 </div>
                 """
+
         chat_html += '</div>'
         st.markdown(chat_html, unsafe_allow_html=True)
 
@@ -757,14 +765,19 @@ def render_job_card_content(j, user, role, user_list):
         with st.form(key=f"chat_form_{j['id']}", clear_on_submit=True):
             col_input, col_btn = st.columns([4, 1])
             with col_input:
-                user_msg = st.text_input("Nhập tin nhắn...", placeholder="Nhập nội dung trao đổi...", label_visibility="collapsed")
+                user_msg = st.text_input("Nhập tin nhắn...", placeholder="Nhập nội dung...", label_visibility="collapsed")
             with col_btn:
                 submitted = st.form_submit_button("Gửi ➢", type="primary", use_container_width=True)
             
-            if submitted and user_msg:
-                if send_chat_message(j['id'], user, user_msg):
-                    st.toast("Đã gửi tin nhắn!")
-                    st.rerun() # Load lại để hiện tin nhắn mới ngay lập tức
+            if submitted:
+                if user_msg and user_msg.strip() != "":
+                    if send_chat_message(j['id'], user, user_msg):
+                        st.toast("Đã gửi!")
+                        time.sleep(1.0) 
+                        st.rerun()
+                else:
+                    st.warning("Vui lòng nhập nội dung!")
+
     # ----------------------------------
 
     st.markdown("---")
