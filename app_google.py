@@ -170,7 +170,52 @@ def get_status_badge_html(row):
     return f"""<span style='background-color: {bg_color}; color: {color}; padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 11px; border: 1px solid {color}; white-space: nowrap;'>{text}</span>"""
 
 def inject_custom_css():
-    st.markdown("""<style>.compact-btn button { padding: 0px 8px !important; min-height: 28px !important; height: 28px !important; font-size: 12px !important; margin-top: 0px !important; } div[data-testid="stExpanderDetails"] { padding-top: 10px !important; } .small-btn button { height: 32px; padding-top: 0px !important; padding-bottom: 0px !important; }</style>""", unsafe_allow_html=True)
+    st.markdown("""
+    <style>
+        .compact-btn button { padding: 0px 8px !important; min-height: 28px !important; height: 28px !important; font-size: 12px !important; margin-top: 0px !important; } 
+        div[data-testid="stExpanderDetails"] { padding-top: 10px !important; } 
+        .small-btn button { height: 32px; padding-top: 0px !important; padding-bottom: 0px !important; }
+        
+        /* CSS CHO CHAT - GIAO DIỆN MESSENGER */
+        .chat-container {
+            max-height: 400px; 
+            overflow-y: auto; 
+            padding: 10px; 
+            border: 1px solid #ddd; 
+            border-radius: 10px; 
+            background-color: #f0f2f5;
+            margin-bottom: 10px;
+        }
+        .chat-bubble {
+            padding: 8px 12px;
+            border-radius: 15px;
+            margin-bottom: 8px;
+            max-width: 80%;
+            word-wrap: break-word;
+            font-size: 14px;
+            position: relative;
+        }
+        .chat-sender {
+            background-color: #6c5ce7; /* Màu tím */
+            color: white;
+            margin-left: auto; /* Đẩy sang phải */
+            border-bottom-right-radius: 2px;
+        }
+        .chat-receiver {
+            background-color: #e4e6eb; /* Màu xám */
+            color: black;
+            margin-right: auto; /* Đẩy sang trái */
+            border-bottom-left-radius: 2px;
+        }
+        .chat-meta {
+            font-size: 10px;
+            margin-bottom: 2px;
+            color: #888;
+        }
+        .sender-meta { text-align: right; }
+        .receiver-meta { text-align: left; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- [CẬP NHẬT] HÀM XỬ LÝ ẢNH CCCD (SẮC NÉT & CÓ PADDING) ---
 def order_points(pts):
@@ -185,64 +230,39 @@ def order_points(pts):
     return rect
 
 def four_point_transform(image, pts, padding_px=20):
-    """
-    Cắt ảnh với padding (vùng đệm) màu trắng để không bị lẹm vào nội dung.
-    padding_px: Số pixel mở rộng ra mỗi cạnh.
-    """
     rect = order_points(pts)
     (tl, tr, br, bl) = rect
-
-    # Tính chiều rộng/cao
     widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
     widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
     maxWidth = max(int(widthA), int(widthB))
-
     heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
     heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
     maxHeight = max(int(heightA), int(heightB))
-
-    # Tọa độ đích: Dịch vào trong một khoảng = padding_px
     dst = np.array([
         [padding_px, padding_px],
         [maxWidth - 1 + padding_px, padding_px],
         [maxWidth - 1 + padding_px, maxHeight - 1 + padding_px],
         [padding_px, maxHeight - 1 + padding_px]
     ], dtype="float32")
-
-    # Kích thước ảnh đầu ra bao gồm cả padding
     output_size = (maxWidth + 2 * padding_px, maxHeight + 2 * padding_px)
-    
     M = cv2.getPerspectiveTransform(rect, dst)
-    # Tô viền màu trắng (255, 255, 255)
     warped = cv2.warpPerspective(image, M, output_size, borderValue=(255, 255, 255))
     return warped
 
 def enhance_sharpness(image_cv):
-    """
-    Làm nét ảnh bằng kernel sharpening.
-    """
-    # Kernel làm nét (trung tâm dương mạnh, xung quanh âm)
-    kernel = np.array([[0, -1, 0],
-                       [-1, 5,-1],
-                       [0, -1, 0]])
+    kernel = np.array([[0, -1, 0], [-1, 5,-1], [0, -1, 0]])
     sharpened = cv2.filter2D(image_cv, -1, kernel)
     return sharpened
 
 def auto_crop_and_enhance_card(image_bytes):
-    # 1. Đọc ảnh
     file_bytes = np.asarray(bytearray(image_bytes.read()), dtype=np.uint8)
     image = cv2.imdecode(file_bytes, 1)
     orig = image.copy()
-    
-    # 2. Tìm biên
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     edged = cv2.Canny(blur, 75, 200)
-    
-    # 3. Tìm contour
     cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:5]
-    
     screenCnt = None
     for c in cnts:
         peri = cv2.arcLength(c, True)
@@ -250,49 +270,32 @@ def auto_crop_and_enhance_card(image_bytes):
         if len(approx) == 4:
             screenCnt = approx
             break
-            
-    # 4. Cắt (có padding)
     if screenCnt is not None:
         warped = four_point_transform(orig, screenCnt.reshape(4, 2), padding_px=20)
     else:
         warped = orig
-
-    # 5. Làm nét
     sharpened_warped = enhance_sharpness(warped)
-
-    # 6. Chuyển sang PIL
     final_rgb = cv2.cvtColor(sharpened_warped, cv2.COLOR_BGR2RGB)
     return Image.fromarray(final_rgb)
 
 def create_a4_print_layout(front_bytes, back_bytes):
-    # Kích thước A4 @ 300 DPI
     A4_W, A4_H = 2480, 3508 
-    # Kích thước CCCD (85.6mm x 53.98mm)
     ID_W_MM, ID_H_MM = 85.6, 53.98
-    PIXELS_PER_MM = 300 / 25.4 # ~11.81
-    
+    PIXELS_PER_MM = 300 / 25.4
     TARGET_W = int(ID_W_MM * PIXELS_PER_MM)
     TARGET_H = int(ID_H_MM * PIXELS_PER_MM)
-    
     try:
         img_f = auto_crop_and_enhance_card(front_bytes)
         img_b = auto_crop_and_enhance_card(back_bytes)
-        
-        # Resize về đúng kích thước chuẩn (dùng LANCZOS cho nét)
         img_f = img_f.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
         img_b = img_b.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
-        
         canvas = Image.new('RGB', (A4_W, A4_H), 'white')
-        
         start_x = (A4_W - TARGET_W) // 2
-        # Khoảng cách giữa 2 thẻ: 50mm (~5cm)
         gap_y = int(50 * PIXELS_PER_MM) 
         total_content_h = TARGET_H * 2 + gap_y
         start_y = (A4_H - total_content_h) // 2 
-        
         canvas.paste(img_f, (start_x, start_y))
         canvas.paste(img_b, (start_x, start_y + TARGET_H + gap_y))
-        
         return canvas
     except Exception as e:
         return None
@@ -354,6 +357,34 @@ def get_audit_sheet():
 def get_wiki_sheet():
     try: creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC"); return sh.worksheet("WIKI")
     except: return None
+
+# --- [NEW] CÁC HÀM XỬ LÝ CHAT ---
+def get_chat_sheet():
+    try: creds = get_gcp_creds(); client = gspread.authorize(creds); sh = client.open("DB_DODAC"); return sh.worksheet("CHAT_LOGS")
+    except: return None
+
+def get_chat_history(job_id):
+    try:
+        sh = get_chat_sheet()
+        # Lấy toàn bộ dữ liệu chat (khuyên dùng filter query nếu dữ liệu quá lớn trong tương lai)
+        all_chats = sh.get_all_records()
+        df_chat = pd.DataFrame(all_chats)
+        if df_chat.empty: return []
+        # Lọc theo Job ID
+        job_chats = df_chat[df_chat['job_id'].astype(str) == str(job_id)]
+        # Sắp xếp theo thời gian
+        job_chats = job_chats.sort_values(by='timestamp')
+        return job_chats.to_dict('records')
+    except: return []
+
+def send_chat_message(job_id, sender, message):
+    try:
+        sh = get_chat_sheet()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Thêm dòng mới: job_id, time, người gửi, tin nhắn
+        sh.append_row([str(job_id), now_str, sender, message])
+        return True
+    except: return False
 
 # --- FILE UPLOAD & ACTIONS ---
 def upload_file_via_script(file_obj, sub_folder_name):
@@ -671,7 +702,7 @@ def render_square_menu(role):
             st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
             st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
 
-# --- RENDER CARD CONTENT (FORM CHI TIẾT) ---
+# --- RENDER CARD CONTENT (FORM CHI TIẾT ĐÃ CÓ CHAT) ---
 def render_job_card_content(j, user, role, user_list):
     try: dl_dt = pd.to_datetime(j['deadline'])
     except: dl_dt = datetime.now() + timedelta(days=365)
@@ -692,28 +723,48 @@ def render_job_card_content(j, user, role, user_list):
                 if st.button("Lưu", key=f"sv_{j['id']}"):
                     update_customer_info(j['id'], new_n, new_p, new_a, user); time.sleep(1); st.rerun()
 
-    # --- PHẦN TRAO ĐỔI NỘI BỘ ---
-    with st.expander("💬 Trao đổi nội bộ (Quản lý & Nhân viên)", expanded=True):
-        col_note_m, col_note_s = st.columns(2)
+    # --- PHẦN CHAT MỚI (LƯU LỊCH SỬ) ---
+    st.markdown("---")
+    with st.expander("💬 Trao đổi / Ghi chú (Chat)", expanded=True):
+        # 1. Hiển thị lịch sử chat
+        chat_history = get_chat_history(j['id'])
         
-        # Cột dành cho Quản lý
-        with col_note_m:
-            if role == "Quản lý":
-                new_m_note = st.text_input("📢 Lời nhắn của Quản lý:", value=str(j.get('manager_note', '')), key=f"mn_{j['id']}")
-                if new_m_note != str(j.get('manager_note', '')):
-                    if st.button("Lưu nhắn QL", key=f"btn_mn_{j['id']}", type="primary"):
-                        update_notes_content(j['id'], 'manager', new_m_note, user)
-                        st.rerun()
-            else:
-                st.info(f"📢 **Quản lý nhắn:**\n{j.get('manager_note', '(Chưa có)')}")
+        # Container cuộn cho chat
+        chat_html = '<div class="chat-container">'
+        for msg in chat_history:
+            sender_name = msg['sender']
+            content = msg['message']
+            time_sent = pd.to_datetime(msg['timestamp']).strftime('%H:%M %d/%m')
+            
+            if sender_name == user: # Tin nhắn của mình
+                chat_html += f"""
+                <div class="chat-meta sender-meta">{time_sent}</div>
+                <div class="chat-bubble chat-sender">
+                    {content}
+                </div>
+                """
+            else: # Tin nhắn người khác
+                chat_html += f"""
+                <div class="chat-meta receiver-meta"><b>{sender_name}</b> - {time_sent}</div>
+                <div class="chat-bubble chat-receiver">
+                    {content}
+                </div>
+                """
+        chat_html += '</div>'
+        st.markdown(chat_html, unsafe_allow_html=True)
 
-        # Cột dành cho Nhân viên
-        with col_note_s:
-            new_s_note = st.text_input("💬 Phản hồi của Nhân viên:", value=str(j.get('staff_note', '')), key=f"sn_{j['id']}")
-            if new_s_note != str(j.get('staff_note', '')):
-                 if st.button("Gửi phản hồi", key=f"btn_sn_{j['id']}"):
-                    update_notes_content(j['id'], 'staff', new_s_note, user)
-                    st.rerun()
+        # 2. Ô nhập tin nhắn
+        with st.form(key=f"chat_form_{j['id']}", clear_on_submit=True):
+            col_input, col_btn = st.columns([4, 1])
+            with col_input:
+                user_msg = st.text_input("Nhập tin nhắn...", placeholder="Nhập nội dung trao đổi...", label_visibility="collapsed")
+            with col_btn:
+                submitted = st.form_submit_button("Gửi ➢", type="primary", use_container_width=True)
+            
+            if submitted and user_msg:
+                if send_chat_message(j['id'], user, user_msg):
+                    st.toast("Đã gửi tin nhắn!")
+                    st.rerun() # Load lại để hiện tin nhắn mới ngay lập tức
     # ----------------------------------
 
     st.markdown("---")
@@ -917,20 +968,6 @@ def render_optimized_list_view(df, user, role, user_list):
                 m_note = str(row.get('manager_note', '')).strip()
                 s_note = str(row.get('staff_note', '')).strip()
                 
-                if m_note:
-                    st.markdown(f"""
-                        <div style="margin-top: 4px; padding: 4px 8px; background-color: #fff3cd; border-left: 3px solid #ffc107; border-radius: 4px; font-size: 13px; color: #856404;">
-                            📢 <b>QL:</b> {m_note}
-                        </div>
-                    """, unsafe_allow_html=True)
-                
-                if s_note:
-                    st.markdown(f"""
-                        <div style="margin-top: 2px; padding: 4px 8px; background-color: #d1e7dd; border-left: 3px solid #198754; border-radius: 4px; font-size: 13px; color: #0f5132; margin-left: 20px;">
-                            💬 <b>NV:</b> {s_note}
-                        </div>
-                    """, unsafe_allow_html=True)
-
             with c3:
                 st.markdown(status_badge, unsafe_allow_html=True)
                 assignee = row['assigned_to'].split(' - ')[0] if row['assigned_to'] else "Chưa giao"
