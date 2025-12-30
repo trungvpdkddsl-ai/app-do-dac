@@ -13,6 +13,7 @@ import io
 import urllib.parse
 import cv2  # Thư viện xử lý ảnh
 import numpy as np # Thư viện toán học
+import html # [QUAN TRỌNG] Thư viện để xử lý ký tự đặc biệt trong chat
 from PIL import Image # Thư viện xử lý ảnh PIL
 from google.oauth2.service_account import Credentials
 from streamlit.runtime.scriptrunner import add_script_run_ctx
@@ -386,7 +387,7 @@ def send_chat_message(job_id, sender, message):
     try:
         sh = get_chat_sheet()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # QUAN TRỌNG: Dùng append_row để thêm dòng mới chứ không ghi đè
+        # Dùng append_row để thêm dòng mới
         sh.append_row([str(job_id), now_str, sender, message])
         return True
     except: return False
@@ -707,7 +708,7 @@ def render_square_menu(role):
             st.button("👥 Nhân Sự", on_click=change_menu, args=("👥 Nhân Sự",))
             st.button("🛡️ Nhật Ký", on_click=change_menu, args=("🛡️ Nhật Ký",))
 
-# --- RENDER CARD CONTENT (ĐÃ SỬA LỖI HIỂN THỊ HTML RAW) ---
+# --- RENDER CARD CONTENT (ĐÃ FIX LỖI HIỂN THỊ HTML RAW) ---
 def render_job_card_content(j, user, role, user_list):
     try: dl_dt = pd.to_datetime(j['deadline'])
     except: dl_dt = datetime.now() + timedelta(days=365)
@@ -734,7 +735,7 @@ def render_job_card_content(j, user, role, user_list):
                 if st.button("Lưu", key=f"sv_{j['id']}"):
                     update_customer_info(j['id'], new_n, new_p, new_a, user); time.sleep(1); st.rerun()
 
-    # --- PHẦN CHAT MỚI (ĐÃ FIX LỖI KHOẢNG TRẮNG F-STRING) ---
+    # --- PHẦN CHAT MỚI (ĐÃ FIX LỖI DO THỤT ĐẦU DÒNG F-STRING) ---
     st.markdown("---")
     with st.expander("💬 Trao đổi / Ghi chú (Chat History)", expanded=True):
         chat_history = get_chat_history(j['id'])
@@ -749,14 +750,16 @@ def render_job_card_content(j, user, role, user_list):
             content = msg['message']
             sender_role = role_map.get(sender_name, "N/V") 
             time_sent = pd.to_datetime(msg['timestamp']).strftime('%H:%M %d/%m')
-            
             display_name = f"{sender_name} ({sender_role})"
             
-            # QUAN TRỌNG: Không thụt đầu dòng trong chuỗi HTML để tránh lỗi Markdown code block
-            if sender_name == user: 
-                chat_html += f"""<div class="chat-meta sender-meta" style="margin-top:5px;">{time_sent}</div><div class="chat-bubble chat-sender" title="{display_name}">{content}</div>"""
+            # Xử lý nội dung an toàn để tránh lỗi HTML
+            safe_content = html.escape(str(content))
+
+            # DÙNG NHÁY ĐƠN VÀ KHÔNG THỤT DÒNG TRONG CHUỖI HTML
+            if sender_name == user:
+                chat_html += f'<div class="chat-meta sender-meta" style="margin-top:5px;">{time_sent}</div><div class="chat-bubble chat-sender" title="{display_name}">{safe_content}</div>'
             else:
-                chat_html += f"""<div class="chat-meta receiver-meta" style="margin-top:5px;"><b>{display_name}</b> - {time_sent}</div><div class="chat-bubble chat-receiver">{content}</div>"""
+                chat_html += f'<div class="chat-meta receiver-meta" style="margin-top:5px;"><b>{display_name}</b> - {time_sent}</div><div class="chat-bubble chat-receiver">{safe_content}</div>'
                 
         chat_html += '</div>'
         st.markdown(chat_html, unsafe_allow_html=True)
