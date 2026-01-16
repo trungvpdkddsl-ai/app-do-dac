@@ -822,19 +822,29 @@ def render_optimized_list_view(df, user, role, user_list):
         progress_html = get_progress_bar_html(row['start_time'], row['deadline'], row['status'])
         status_badge = get_status_badge_html(row)
         
-        # --- [MỚI] HIỂN THỊ MÃ HỒ SƠ ---
+        # --- [CẬP NHẬT] LẤY MÃ VÀ NGÀY HẸN ---
         receipt_code = str(row.get('receipt_code', '')).strip()
-        code_html = ""
-        if receipt_code: code_html = f"<div style='margin-top:2px; font-weight:bold; color:#d63031; font-size:12px; background:#fff3cd; padding:2px 6px; border-radius:4px; display:inline-block;'>🔖 {receipt_code}</div>"
+        deadline_dt = pd.to_datetime(row['deadline'], errors='coerce')
+        deadline_str = deadline_dt.strftime('%d/%m/%Y') if pd.notna(deadline_dt) else "Chưa hẹn"
         
         id_display_html = f"**{full_display_id}**"
         if row['current_stage'] == "3. Nộp hồ sơ": id_display_html = f"<span style='background-color: #ffeb3b; color: #d63031; padding: 4px 8px; border-radius: 4px; font-size: 16px; font-weight: 900; border: 2px solid red; box-shadow: 0 0 5px rgba(255,0,0,0.5);'>{full_display_id} (CẦN NỘP)</span>"
         
         with st.container(border=True):
+            # --- [CẬP NHẬT] BANNER VÀNG HIỂN THỊ TRÊN CÙNG ---
+            if receipt_code:
+                st.markdown(f"""
+                <div style="background-color: #fff3cd; border: 1px solid #ffecb5; border-radius: 8px; padding: 10px; margin-bottom: 10px; text-align: center;">
+                    <div style="color: #666; font-size: 12px; font-weight: bold; text-transform: uppercase;">🔖 Mã hồ sơ / Biên nhận</div>
+                    <div style="color: #d63031; font-size: 20px; font-weight: 900; margin: 5px 0;">{receipt_code}</div>
+                    <div style="color: #004085; font-size: 14px; font-weight: bold;">📅 Hẹn trả: {deadline_str}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            # --------------------------------------------------
+
             c1, c2, c3, c4 = st.columns([1.2, 3, 1.2, 0.5])
             with c1:
                 st.markdown(id_display_html, unsafe_allow_html=True)
-                if code_html: st.markdown(code_html, unsafe_allow_html=True)
                 st.caption(f"{row['current_stage']}")
             with c2:
                 st.markdown(f"<span style='color:#0d6efd; font-weight:bold; font-size:15px'>{row['customer_name']}</span>", unsafe_allow_html=True)
